@@ -15,8 +15,8 @@ export function nativeRoot() {
   }
   const home = process.env.SILK_HOME || resolve(homedir(), '.silk');
   const directory = resolve(home, 'git', revision);
-  if (!existsSync(resolve(directory, 'native/gpu/webgpu/browser/runner.ts'))) {
-    throw new Error(`Pinned native payload missing: ${directory}. First run silk check --manifest-path graphics/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown`);
+  if (!existsSync(resolve(directory, 'modules/gpu/webgpu/browser/runner.ts'))) {
+    throw new Error(`Pinned native payload missing: ${directory}. First run silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown`);
   }
   return directory;
 }

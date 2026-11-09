@@ -8,7 +8,7 @@ for (const packagePath of cpu) {
   run(silk, ['test', '--manifest-path', manifest(packagePath), '--root', 'src/tests.silk']);
   run(silk, ['check', '--manifest-path', manifest(packagePath), '--target', 'wasm32-unknown-unknown']);
 }
-run(build('ui_scene/tests'), ['graphics/ui_scene/tests/goldens']);
+run(build('ui_scene/tests'), ['modules/ui_scene/tests/goldens']);
 for (const packagePath of ['vector/bench', 'vector/filter-bench', 'gpu_scene', 'gpu_scene/tests',
   'ui_renderer', 'ui_renderer/fixtures', 'ui_renderer/tests', 'ui_renderer/bench', 'ui_renderer/browser']) {
   run(silk, ['check', '--manifest-path', manifest(packagePath)]);

@@ -35,7 +35,7 @@ export function benchmark({ name, packagePath, reference, binaryName, iterations
   mkdirSync(out, { recursive: true });
   const binary = build(packagePath, { release: true });
   run('cargo', ['build', '--release', '--locked', '--quiet', '--manifest-path',
-    resolve(root, 'graphics', packagePath, reference, 'Cargo.toml'), '--target-dir', target]);
+    resolve(root, 'modules', packagePath, reference, 'Cargo.toml'), '--target-dir', target]);
   const other = resolve(target, 'release', binaryName + (process.platform === 'win32' ? '.exe' : ''));
   const ours = timings(binary, [], out, scenes);
   const theirs = timings(other, [String(iterations)], out, [...scenes, ...(baseline ? ['baseline'] : [])]);

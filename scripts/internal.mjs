@@ -18,7 +18,7 @@ export function run(command, args = [], options = {}) {
   return result;
 }
 export function manifest(packagePath) {
-  return resolve(root, 'graphics', packagePath, 'silk.toml');
+  return resolve(root, 'modules', packagePath, 'silk.toml');
 }
 export function build(packagePath, { release = false, wasm = false } = {}) {
   const path = manifest(packagePath);

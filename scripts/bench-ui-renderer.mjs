@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { build, root, run } from './internal.mjs';
 
-const budget = JSON.parse(readFileSync(resolve(root, 'graphics/ui_renderer/bench/budget.json'), 'utf8'));
+const budget = JSON.parse(readFileSync(resolve(root, 'modules/ui_renderer/bench/budget.json'), 'utf8'));
 const binary = build('ui_renderer/bench', { release: true });
 const result = run(binary, [], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
 process.stderr.write(result.stderr);

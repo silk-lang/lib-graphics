@@ -31,7 +31,7 @@ jobs:
       - name: Bootstrap pinned Silk
         run: node scripts/install-silk.mjs
       - name: Fetch the exact native dependency through Silk
-        run: silk check --manifest-path graphics/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
+        run: silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
       - name: Prepare pinned native toolchain and lavapipe
         run: node "$(node scripts/native-root.mjs)/scripts/setup-ci.mjs" --linux-gpu
       - name: Check all packages and compare native renderers
@@ -48,7 +48,7 @@ jobs:
       - name: Bootstrap pinned Silk
         run: node scripts/install-silk.mjs
       - name: Fetch the exact native dependency through Silk
-        run: silk check --manifest-path graphics/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
+        run: silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
       - name: Install browser display prerequisites
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb xauth
       - name: Prepare existing Chromium and pinned Playwright JavaScript
@@ -65,7 +65,7 @@ jobs:
         with:
           node-version: '22'
       - run: node scripts/install-silk.mjs
-      - run: silk check --manifest-path graphics/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
+      - run: silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
       - run: node "$(node scripts/native-root.mjs)/scripts/setup-ci.mjs" --linux-gpu
       - run: node scripts/bench-vector.mjs
       - run: node scripts/bench-filters.mjs

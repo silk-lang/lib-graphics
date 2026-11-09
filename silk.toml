@@ -1,20 +1,20 @@
 [workspace]
 members = [
-  "graphics/atlas",
-  "graphics/codec",
-  "graphics/editor",
-  "graphics/geometry",
-  "graphics/gpu_scene",
-  "graphics/gpu_scene/tests",
-  "graphics/ui_renderer",
-  "graphics/ui_renderer/bench",
-  "graphics/ui_renderer/browser",
-  "graphics/ui_renderer/fixtures",
-  "graphics/ui_renderer/tests",
-  "graphics/ui_scene",
-  "graphics/ui_scene/tests",
-  "graphics/vector",
-  "graphics/vector/bench",
-  "graphics/vector/filter-bench"
+  "modules/atlas",
+  "modules/codec",
+  "modules/editor",
+  "modules/geometry",
+  "modules/gpu_scene",
+  "modules/gpu_scene/tests",
+  "modules/ui_renderer",
+  "modules/ui_renderer/bench",
+  "modules/ui_renderer/browser",
+  "modules/ui_renderer/fixtures",
+  "modules/ui_renderer/tests",
+  "modules/ui_scene",
+  "modules/ui_scene/tests",
+  "modules/vector",
+  "modules/vector/bench",
+  "modules/vector/filter-bench"
 ]
 silk-version = "0.1.0-dev.63+657e3c900f65"

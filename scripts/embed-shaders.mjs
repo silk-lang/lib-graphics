@@ -4,8 +4,8 @@ import { basename, resolve } from 'node:path';
 import { root } from './internal.mjs';
 
 const sets = [
-  ['graphics/gpu_scene', ['scene', 'blend+compose', 'blend+filter']],
-  ['graphics/ui_renderer', ['common+quad', 'common+shadow', 'common+underline', 'common+sprite+mono', 'common+sprite+poly', 'common+path', '../../gpu_scene/shaders/blend+layer']],
+  ['modules/gpu_scene', ['scene', 'blend+compose', 'blend+filter']],
+  ['modules/ui_renderer', ['common+quad', 'common+shadow', 'common+underline', 'common+sprite+mono', 'common+sprite+poly', 'common+path', '../../gpu_scene/shaders/blend+layer']],
 ];
 const stale = [];
 for (const [directory, shaders] of sets) {
