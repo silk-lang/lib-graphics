@@ -33,7 +33,7 @@ packages from `nonstd` will fail, even when their version strings match.
 
 ## Toolchain and builds
 
-Use Silk **0.1.0-dev.61+91f335268900**, an LLVM **22** installation including `clang` and `wasm-ld`,
+Use Silk **0.1.0-dev.63+657e3c900f65**, an LLVM **22** installation including `clang` and `wasm-ld`,
 and Git. Node **22+** runs the internal tools. `SILK_CLANG` can select an absolute LLVM 22 clang;
 `SILK` can select a compiler executable for the Node runners. The compiler's standard library is
 part of its release distribution. No Python is required for normal builds, tests or CI.
