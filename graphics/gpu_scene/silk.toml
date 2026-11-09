@@ -8,5 +8,5 @@ exports = ["scene", "renderer", "filter", "generated_shaders"]
 
 [dependencies]
 vector = { path = "../vector", package = "graphics-vector" }
-webgpu = { git = "https://github.com/silk-lang/lib-native.git", rev = "bb39218c2174e12ae276cf0b1863ac2c6d84bd95", path = "native/gpu/webgpu", package = "gpu-webgpu" }
-webgpu_sys = { git = "https://github.com/silk-lang/lib-native.git", rev = "bb39218c2174e12ae276cf0b1863ac2c6d84bd95", path = "native/gpu/webgpu/sys", package = "gpu-webgpu-sys" }
+webgpu = { git = "https://github.com/silk-lang/lib-native.git", rev = "d4cc76e7fb2774cd5b02cdd604af36e3c8ac6044", path = "native/gpu/webgpu", package = "gpu-webgpu" }
+webgpu_sys = { git = "https://github.com/silk-lang/lib-native.git", rev = "d4cc76e7fb2774cd5b02cdd604af36e3c8ac6044", path = "native/gpu/webgpu/sys", package = "gpu-webgpu-sys" }
