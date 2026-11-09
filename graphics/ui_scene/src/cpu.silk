@@ -30,7 +30,7 @@ import vector.geometry_error { GeometryError }
 import vector.layer as layering
 import vector.path { Path }
 import vector.pixmap { Pixmap, Rgba8, overPacked, pack, scalePacked }
-import vector.strips { Coverage, EVENODD, NONZERO, Rasterizer }
+import vector.strips { Coverage, NONZERO, Rasterizer }
 import vector.stroke { CAP_BUTT, JOIN_ROUND, Stroke, Stroker }
 import color
 import silk.color.rgba { Rgba }
@@ -341,15 +341,42 @@ fn circular(radii: Corners<f32>, rect: Rect<f32>) -> Radii {
   return Radii { values: [tl, tl, tr, tr, br, br, bl, bl] }
 }
 
-/// Appends the outline of `rect` with elliptical corners `radii`, clockwise in y-down space.
-effect fn roundedRect(path: &mut Path, rect: Rect<f32>, radii: Radii) -> ()
+/// Appends the outline with optional reversed winding for subtractive inner contours.
+effect fn roundedRect(path: &mut Path, rect: Rect<f32>, radii: Radii, counterclockwise: bool) -> ()
   ! OutOfMemoryError
   ? &mut Allocator {
   let x0 = f32.toF64(rect.xMin)
-  let y0 = f32.toF64(rect.yMin)
+  let y0 = f32.toF64(
+    if counterclockwise {
+      rect.yMax
+    } else {
+      rect.yMin
+    },
+  )
   let x1 = f32.toF64(rect.xMax)
-  let y1 = f32.toF64(rect.yMax)
-  let r = radii.values
+  let y1 = f32.toF64(
+    if counterclockwise {
+      rect.yMin
+    } else {
+      rect.yMax
+    },
+  )
+
+  // Reflect the traversal vertically, including ellipse axes and corner identities.
+  let r = if counterclockwise {
+    [
+      radii.values[6],
+      -radii.values[7],
+      radii.values[4],
+      -radii.values[5],
+      radii.values[2],
+      -radii.values[3],
+      radii.values[0],
+      -radii.values[1],
+    ]
+  } else {
+    radii.values
+  }
   let tlx = f32.toF64(r[0])
   let tly = f32.toF64(r[1])
   let trx = f32.toF64(r[2])
@@ -359,7 +386,7 @@ effect fn roundedRect(path: &mut Path, rect: Rect<f32>, radii: Radii) -> ()
   let blx = f32.toF64(r[6])
   let bly = f32.toF64(r[7])
   run path.moveTo(x0, y0 + tly)
-  if tlx > 0.0 && tly > 0.0 {
+  if tlx > 0.0 && tly != 0.0 {
     run path.ellipseArc(
       Point.new(x0 + tlx, y0 + tly),
       Point.new(tlx, 0.0),
@@ -367,11 +394,11 @@ effect fn roundedRect(path: &mut Path, rect: Rect<f32>, radii: Radii) -> ()
       PI,
       PI * 0.5,
     )
-  } else if tly > 0.0 {
+  } else if tly != 0.0 {
     run path.lineTo(x0, y0)
   }
   run path.lineTo(x1 - trx, y0)
-  if trx > 0.0 && try > 0.0 {
+  if trx > 0.0 && try != 0.0 {
     run path.ellipseArc(
       Point.new(x1 - trx, y0 + try),
       Point.new(trx, 0.0),
@@ -383,7 +410,7 @@ effect fn roundedRect(path: &mut Path, rect: Rect<f32>, radii: Radii) -> ()
     run path.lineTo(x1, y0)
   }
   run path.lineTo(x1, y1 - bry)
-  if brx > 0.0 && bry > 0.0 {
+  if brx > 0.0 && bry != 0.0 {
     run path.ellipseArc(
       Point.new(x1 - brx, y1 - bry),
       Point.new(brx, 0.0),
@@ -395,7 +422,7 @@ effect fn roundedRect(path: &mut Path, rect: Rect<f32>, radii: Radii) -> ()
     run path.lineTo(x1, y1)
   }
   run path.lineTo(x0 + blx, y1)
-  if blx > 0.0 && bly > 0.0 {
+  if blx > 0.0 && bly != 0.0 {
     run path.ellipseArc(
       Point.new(x0 + blx, y1 - bly),
       Point.new(blx, 0.0),
@@ -641,7 +668,7 @@ impl CpuRenderer {
     }
     let outer = circular(quad.cornerRadii, quad.bounds)
     self.path.clear()
-    run roundedRect(&mut self.path, quad.bounds, outer)
+    run roundedRect(&mut self.path, quad.bounds, outer, false)
     if !quad.background.isTransparent() {
       let mut mask = List<u8>.make()
       run self.rasterize(area, NONZERO, &mut mask)
@@ -652,7 +679,7 @@ impl CpuRenderer {
       return
     }
 
-    // The border band: the outer outline and the inner one, even-odd.
+    // Opposite windings cancel shared fractional edges before coverage is integrated.
     let w = quad.borderWidths
     let inner = Rect<f32>.new(
       quad.bounds.xMin + w.left,
@@ -674,10 +701,10 @@ impl CpuRenderer {
           f32.max(r[7] - w.bottom, 0.0),
         ],
       }
-      run roundedRect(&mut self.path, inner, innerRadii)
+      run roundedRect(&mut self.path, inner, innerRadii, true)
     }
     let mut band = List<u8>.make()
-    run self.rasterize(area, EVENODD, &mut band)
+    run self.rasterize(area, NONZERO, &mut band)
     let dashed = match quad.borderStyle {
       BorderStyle.Solid => false
       BorderStyle.Dashed => true
@@ -705,7 +732,7 @@ impl CpuRenderer {
         ],
       }
       self.outline.clear()
-      run roundedRect(&mut self.outline, middle, middleRadii)
+      run roundedRect(&mut self.outline, middle, middleRadii, false)
       let mut style = Stroke.make(f32.toF64(widest) + 2.0)
       let dash = f32.toF64(widest)
       run style.setDashes(&[dash * 2.0, dash])
@@ -740,7 +767,7 @@ impl CpuRenderer {
     self.path.clear()
     let hasShape = shape.xMin < shape.xMax && shape.yMin < shape.yMax
     if hasShape {
-      run roundedRect(&mut self.path, shape, circular(shadow.shapeRadii(), shape))
+      run roundedRect(&mut self.path, shape, circular(shadow.shapeRadii(), shape), false)
     }
     let mut blurred = List<u8>.make()
     run self.rasterize(wide, NONZERO, &mut blurred)
@@ -770,7 +797,12 @@ impl CpuRenderer {
     if shadow.inset {
       // Only inside the box.
       self.path.clear()
-      run roundedRect(&mut self.path, shadow.bounds, circular(shadow.cornerRadii, shadow.bounds))
+      run roundedRect(
+        &mut self.path,
+        shadow.bounds,
+        circular(shadow.cornerRadii, shadow.bounds),
+        false,
+      )
       let mut box = List<u8>.make()
       run self.rasterize(visible, NONZERO, &mut box)
       multiply(mask.asMutSlice(), box.asSlice())
@@ -794,6 +826,7 @@ impl CpuRenderer {
         &mut self.path,
         Rect<f32>.new(b.xMin, b.yMin, b.xMax, bottom),
         Radii { values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] },
+        false,
       )
     } else {
       let thickness = f32.toF64(line.thickness)
@@ -876,6 +909,7 @@ impl CpuRenderer {
       &mut self.path,
       sprite.clipBounds,
       circular(sprite.cornerRadii, sprite.clipBounds),
+      false,
     )
     let mut shape = List<u8>.make()
     run self.rasterize(area, NONZERO, &mut shape)

@@ -159,6 +159,31 @@ test effect fn bordersSolidAndDashed() -> ()
   run borders() |> Effect.provideMut<Allocator>(&mut allocator)
 }
 
+test effect fn fractionalOneSidedBorderHasNoPhantomEdges() -> ()
+  ! AssertionError<'static> | GeometryError | OutOfMemoryError {
+  let mut allocator = Allocator.systemAllocatorProvider()
+  let pixels = AtlasPixels.make()
+  let mut scene = Scene.make()
+  let mut q = Quad.fill(
+    rect(10.5, 10.5, 80.0, 10.0),
+    window(),
+    Background.solid(color.transparent()),
+  )
+  q.borderWidths = Insets<f32>.new(0.0, 0.0, 2.0, 0.0)
+  q.borderColor = color.black()
+  drop run scene.quad(q) |> Effect.provideMut<Allocator>(&mut allocator)
+  let image = run render(&mut scene, &pixels) |> Effect.provideMut<Allocator>(&mut allocator)
+  run Testing.expect(
+    is(image.pixel(50, 10), 0, 0, 0, 0) && is(image.pixel(10, 15), 0, 0, 0, 0),
+    "zero-width edges cancel even at fractional coordinates",
+  )
+  run Testing.expect(
+    is(image.pixel(50, 18), 0, 0, 0, 128) && is(image.pixel(50, 19), 0, 0, 0, 255)
+      && is(image.pixel(50, 20), 0, 0, 0, 128),
+    "the bottom border retains exact half-pixel coverage",
+  )
+}
+
 effect fn gradients() -> ()
   ! AssertionError<'static> | GeometryError | OutOfMemoryError
   ? &mut Allocator {

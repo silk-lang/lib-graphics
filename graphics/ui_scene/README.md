@@ -125,6 +125,10 @@ evaluated at pixel centers. Sprites sample their tile bilinearly, clamped to the
 renderer with SDF quads and an erf shadow is expected to match it within a small tolerance, not
 byte for byte. Paths match `vector`'s own fill byte for byte.
 
+Border bands use oppositely wound outer and inner contours with nonzero filling.
+Shared fractional edges cancel before area coverage is integrated, so a zero-width
+border edge cannot paint a stray line during fractional scrolling.
+
 ## Tests
 
 ```sh
