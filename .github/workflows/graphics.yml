@@ -1,0 +1,72 @@
+name: graphics
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * 3'
+permissions:
+  contents: read
+concurrency:
+  group: graphics-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+jobs:
+  native:
+    name: CPU tests, wasm checks and Dawn comparisons
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .cache/silk
+            .cache/downloads
+            ~/.silk
+          key: graphics-native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('toolchains.lock.json', '**/silk.toml') }}
+      - name: Bootstrap pinned Silk
+        run: node scripts/install-silk.mjs
+      - name: Fetch the exact native dependency through Silk
+        run: silk check --manifest-path graphics/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
+      - name: Prepare pinned native toolchain and lavapipe
+        run: node "$(node scripts/native-root.mjs)/scripts/setup-ci.mjs" --linux-gpu
+      - name: Check all packages and compare native renderers
+        run: node scripts/check.mjs
+  browser:
+    name: Renderer fixtures on navigator.gpu
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Bootstrap pinned Silk
+        run: node scripts/install-silk.mjs
+      - name: Fetch the exact native dependency through Silk
+        run: silk check --manifest-path graphics/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
+      - name: Install browser display prerequisites
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb xauth
+      - name: Prepare existing Chromium and pinned Playwright JavaScript
+        run: node "$(node scripts/native-root.mjs)/scripts/setup-ci.mjs" --browser
+      - name: Build wasm and compare the browser renderer
+        run: node scripts/test-browser.mjs
+  benchmarks:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/install-silk.mjs
+      - run: silk check --manifest-path graphics/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
+      - run: node "$(node scripts/native-root.mjs)/scripts/setup-ci.mjs" --linux-gpu
+      - run: node scripts/bench-vector.mjs
+      - run: node scripts/bench-filters.mjs
+      - run: node scripts/bench-ui-renderer.mjs

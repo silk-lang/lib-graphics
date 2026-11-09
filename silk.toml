@@ -1,0 +1,20 @@
+[workspace]
+members = [
+  "graphics/atlas",
+  "graphics/codec",
+  "graphics/editor",
+  "graphics/geometry",
+  "graphics/gpu_scene",
+  "graphics/gpu_scene/tests",
+  "graphics/ui_renderer",
+  "graphics/ui_renderer/bench",
+  "graphics/ui_renderer/browser",
+  "graphics/ui_renderer/fixtures",
+  "graphics/ui_renderer/tests",
+  "graphics/ui_scene",
+  "graphics/ui_scene/tests",
+  "graphics/vector",
+  "graphics/vector/bench",
+  "graphics/vector/filter-bench"
+]
+silk-version = "0.1.0-dev.61+91f335268900"
