@@ -252,7 +252,7 @@ effect fn expectGeometryError<T>(
 ) -> ()
   ! AssertionError<'static> | OutOfMemoryError {
   match &result.* {
-    Result<T, OutOfMemoryError | GeometryError>.Success { value: _ } => {
+    Result<T, OutOfMemoryError | GeometryError>.Success { .. } => {
       run Testing.expect(false, "geometry request must fail explicitly")
     }
     Result<T, OutOfMemoryError | GeometryError>.Failure { error } => {

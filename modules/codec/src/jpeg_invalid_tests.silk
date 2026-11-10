@@ -11,8 +11,8 @@ effect fn rejects(data: &[u8]) -> ()
   ! AssertionError<'static> {
   let result = run Effect.result(jpeg.inspect(data))
   let rejected = match &result {
-    Result<Header, JpegError | ImageError>.Success { value: _ } => false
-    Result<Header, JpegError | ImageError>.Failure { error: _ } => true
+    Result<Header, JpegError | ImageError>.Success { .. } => false
+    Result<Header, JpegError | ImageError>.Failure { .. } => true
   }
   run Testing.expect(rejected, "malformed JPEG header rejected")
 }

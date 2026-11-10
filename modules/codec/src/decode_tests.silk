@@ -81,7 +81,7 @@ test effect fn unknownDataFails() -> ()
   let result = run Effect.result(decodeSrgb(b"GIF89a"))
     |> Effect.provideMut<Allocator>(&mut allocator)
   let failed = match &result {
-    Result<Image, PngError | JpegError | ImageError | OutOfMemoryError>.Failure { error: _ } => true
+    Result<Image, PngError | JpegError | ImageError | OutOfMemoryError>.Failure { .. } => true
     _ => false
   }
   run Testing.expect(failed, "a GIF is not decoded")

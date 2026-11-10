@@ -95,7 +95,7 @@ effect fn profile(data: &[u8]) -> Bytes
       }
       result.truncate(value.written)
     }
-    Result<Progress, DecodeError>.Failure { error: _ } => {
+    Result<Progress, DecodeError>.Failure { .. } => {
       fail PngError.InvalidData
     }
   }
@@ -566,7 +566,7 @@ pub effect fn decodeWithMetadata<'a>(data: &'a [u8]) -> Decoded
         fail PngError.InvalidData
       }
     }
-    Result<Progress, DecodeError>.Failure { error: _ } => {
+    Result<Progress, DecodeError>.Failure { .. } => {
       fail PngError.InvalidData
     }
   }

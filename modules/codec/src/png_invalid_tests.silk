@@ -13,7 +13,7 @@ effect fn rejects(data: &[u8]) -> ()
   ? &mut Allocator {
   let result = run Effect.result(png.decode(data))
   let rejected = match &result {
-    Result<Image, PngError | ImageError | OutOfMemoryError>.Success { value: _ } => false
+    Result<Image, PngError | ImageError | OutOfMemoryError>.Success { .. } => false
     Result<Image, PngError | ImageError | OutOfMemoryError>.Failure { error } => match &error {
       PngError _ => true
       ImageError _ => true

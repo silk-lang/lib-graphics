@@ -1044,7 +1044,7 @@ test effect fn edgesAlongClipPlanesStayWithinTolerance() -> ()
       )
         |> Effect.provideMut<Allocator>(&mut allocator)
       match &result {
-        Result<(), GeometryError | OutOfMemoryError>.Success { value: _ } => {
+        Result<(), GeometryError | OutOfMemoryError>.Success { .. } => {
           if f64.abs(area(lines.asSlice()) - 1500.0) > 0.01 {
             failures = failures + 1
           }

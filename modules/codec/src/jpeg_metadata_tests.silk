@@ -52,8 +52,8 @@ effect fn rejects(data: &[u8]) -> ()
   ? &mut Allocator {
   let result = run Effect.result(jpeg_metadata.read(data))
   let rejected = match &result {
-    Result<Metadata, JpegError | ImageError | OutOfMemoryError>.Success { value: _ } => false
-    Result<Metadata, JpegError | ImageError | OutOfMemoryError>.Failure { error: _ } => true
+    Result<Metadata, JpegError | ImageError | OutOfMemoryError>.Success { .. } => false
+    Result<Metadata, JpegError | ImageError | OutOfMemoryError>.Failure { .. } => true
   }
   run Testing.expect(rejected, "malformed ICC chunk framing rejected")
 }

@@ -301,7 +301,7 @@ fn takeField(document: Value, key: string) -> Value {
       let mut at: usize = 0
       while at < owned.length() {
         if String.view(&owned.asSlice()[at].key) == key {
-          let JsonEntry {key: _, value} = owned.remove(at)
+          let JsonEntry { value, .. } = owned.remove(at)
           return move value
         }
         at = at + 1

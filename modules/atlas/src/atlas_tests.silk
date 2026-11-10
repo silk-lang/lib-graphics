@@ -16,7 +16,7 @@ fn small(maxTextures: u32) -> AtlasOptions {
 
 fn isLive(atlas: &Atlas, id: TileId) -> bool {
   return match atlas.get(id) {
-    Option<AtlasTile>.Some { value: _ } => true
+    Option<AtlasTile>.Some { .. } => true
     Option<AtlasTile>.None => false
   }
 }
@@ -40,7 +40,7 @@ effect fn attempt(atlas: &mut Atlas, kind: Kind, w: u32, h: u32) -> u32
 effect fn code(error: AtlasError) -> u32 {
   return match error {
     AtlasError.EmptyTile => 1
-    AtlasError.TooLarge { width: _, height: _ } => 2
+    AtlasError.TooLarge { .. } => 2
     AtlasError.Full => 3
   }
 }

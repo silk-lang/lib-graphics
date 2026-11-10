@@ -6,5 +6,5 @@ silk-version = "0.1.0-dev.64+8214c402307b"
 [dependencies]
 vector = { path = "../../vector", package = "graphics-vector" }
 gpu_scene = { path = "..", package = "graphics-gpu-scene" }
-webgpu = { git = "https://github.com/silk-lang/lib-native.git", rev = "e437b1f5e0197787c1de9b9eb700423a82faa7c1", path = "modules/gpu/webgpu", package = "gpu-webgpu" }
-webgpu_sys = { git = "https://github.com/silk-lang/lib-native.git", rev = "e437b1f5e0197787c1de9b9eb700423a82faa7c1", path = "modules/gpu/webgpu/sys", package = "gpu-webgpu-sys" }
+webgpu = { git = "https://github.com/silk-lang/lib-native.git", rev = "4779eb00a9fcc4a1006ba254d498fdc75498b66d", path = "modules/gpu/webgpu", package = "gpu-webgpu" }
+webgpu_sys = { git = "https://github.com/silk-lang/lib-native.git", rev = "4779eb00a9fcc4a1006ba254d498fdc75498b66d", path = "modules/gpu/webgpu/sys", package = "gpu-webgpu-sys" }
