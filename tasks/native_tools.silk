@@ -1,0 +1,56 @@
+import silk.cli.task { TaskError }
+import silk.collections.bytes { Bytes }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+import silk.system.filesystem { FileError, FileSystem, Path }
+import silk.system.host_input { HostInput, HostInputError }
+import silk.text.string { String }
+import generators
+import support
+static if Intrinsic.targetOperatingSystem() == "windows" {
+  import silk.platform.windows.path { WindowsPath }
+}
+
+effect fn argument(path: &Path) -> String
+  ! TaskError | FileError | OutOfMemoryError ? &mut Allocator {
+  static if Intrinsic.targetOperatingSystem() == "windows" {
+    let native = run WindowsPath.toNativeBytes(path)
+    return run String.copy(run support.text(Bytes.asSlice(&native)))
+  } else { return run String.copy(run support.stringPath(path)) }
+}
+
+effect fn manifest() -> String
+  ! TaskError | FileError | HostInputError | OutOfMemoryError
+  ? &mut HostInput | &mut Allocator | &mut FileSystem {
+  let root = run generators.nativeRoot()
+  let file = run Path.join(&root, "silk.toml")
+  return run argument(&file)
+}
+
+pub effect fn setup(browser: bool, linuxGpu: bool) -> ()
+  ! TaskError | FileError | HostInputError | OutOfMemoryError
+  ? &mut HostInput | &mut Allocator | &mut FileSystem {
+  let native = run manifest()
+  if browser && linuxGpu {
+    run support.silk(&["task", "--manifest-path", String.view(&native), "setup-ci", "--browser", "--linux-gpu"])
+  } else if browser {
+    run support.silk(&["task", "--manifest-path", String.view(&native), "setup-ci", "--browser"])
+  } else if linuxGpu {
+    run support.silk(&["task", "--manifest-path", String.view(&native), "setup-ci", "--linux-gpu"])
+  } else { run support.silk(&["task", "--manifest-path", String.view(&native), "setup-ci"]) }
+}
+
+pub effect fn prepareWindows(clang: string, runtimeDirectory: string, json: bool) -> ()
+  ! TaskError | FileError | HostInputError | OutOfMemoryError
+  ? &mut HostInput | &mut Allocator | &mut FileSystem {
+  let native = run manifest()
+  let mut directory = String.make()
+  if runtimeDirectory != "" {
+    let path = run support.path(runtimeDirectory)
+    directory = run argument(&path)
+  }
+  if json {
+    run support.silk(&["task", "--manifest-path", String.view(&native), "prepare-windows", "--clang", clang, "--runtime-directory", String.view(&directory), "--json"])
+  } else {
+    run support.silk(&["task", "--manifest-path", String.view(&native), "prepare-windows", "--clang", clang, "--runtime-directory", String.view(&directory)])
+  }
+}

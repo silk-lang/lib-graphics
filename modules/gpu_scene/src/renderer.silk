@@ -332,7 +332,7 @@ impl SceneRenderer {
         run stack.append(nextPush)
         nextPush = nextPush + 1
       } else if op == OP_POP_LAYER {
-        let ignored = stack.pop()
+        drop stack.pop()
         let parent = u32.toUsize(stack.asSlice()[stack.length() - 1])
         let list = layers.asSlice()
         let source = TexelCopyTextureInfo.default().withTexture(&list[parent].texture)
@@ -344,7 +344,7 @@ impl SceneRenderer {
           &list[1].view, &list[current].view, &list[mask].view)
         pass = pass + 1
       } else if op == OP_POP_MASK {
-        let ignored = stack.pop()
+        drop stack.pop()
         let list = layers.asSlice()
         let hasMask = d != NO_MASK
         let clip = if hasMask { u32.toUsize(maskBase + d) } else { current }

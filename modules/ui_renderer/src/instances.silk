@@ -19,7 +19,6 @@ import ui_scene.primitives {
   Background,
   BorderStyle,
   LinearGradient,
-  ContentMask,
   GlyphSprite,
   ImageSprite,
   PathSprite,

@@ -241,7 +241,7 @@ impl Path {
       return false
     }
     let isMove = match &segment {
-      Segment.MoveTo { to } => true
+      Segment.MoveTo { .. } => true
       _ => false
     }
     if Path.isEmpty(&self.*) && !isMove {
@@ -250,8 +250,8 @@ impl Path {
     let next = match &segment {
       Segment.MoveTo { to } => to
       Segment.LineTo { to } => to
-      Segment.QuadraticTo { control, to } => to
-      Segment.CubicTo { control1, control2, to } => to
+      Segment.QuadraticTo { to, .. } => to
+      Segment.CubicTo { to, .. } => to
       Segment.ArcTo { arc } => arc.to
       Segment.Close => self.start
     }

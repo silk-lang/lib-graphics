@@ -31,7 +31,6 @@
 import silk.collections.list { List }
 import silk.collections.slice { Slice }
 import silk.core.equal { Equal }
-import silk.core.option { Option }
 import silk.core.order { Order, Ordering }
 import silk.core.ownership { Copy }
 import silk.geometry.rect { Rect }

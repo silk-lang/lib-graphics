@@ -1,0 +1,50 @@
+// Capture the host environment for ChildProcess, whose request otherwise starts empty.
+static if Intrinsic.targetOperatingSystem() == "windows" {
+  import silk.collections.bytes { Bytes }
+  import silk.collections.slice { Slice }
+  import silk.core.option { Option }
+  import silk.core.ownership { Drop }
+  import silk.mem.allocator { Allocator, OutOfMemoryError }
+  import silk.mem.pointer { Pointer }
+  import silk.platform.windows.environment { EnvironmentEntry }
+  import silk.platform.windows.wtf8 { Wtf8 }
+  import silk.system.child_process { ChildProcess, ProcessRequest }
+  import silk.system.host_input { HostInputError }
+
+  unsafe extern "C" fn GetEnvironmentStringsW() -> ?[*]mut u16
+  unsafe extern "C" fn FreeEnvironmentStringsW(block: [*]mut u16) -> i32
+
+  struct Block { pointer: [*]mut u16 }
+  impl Drop for Block {
+    fn drop(self: &mut Self) -> () {
+      let freed = unsafe FreeEnvironmentStringsW(self.pointer)
+      drop freed
+    }
+  }
+
+  pub effect fn inherit(request: &mut ProcessRequest) -> ()
+    ! HostInputError | OutOfMemoryError ? &mut Allocator {
+    let pointer = match move Pointer.nonNullManyMut(unsafe GetEnvironmentStringsW()) {
+      Option<[*]mut u16>.Some { value } => value
+      Option<[*]mut u16>.None => { fail HostInputError {} }
+    }
+    let block = Block { pointer: pointer }
+    let mut offset: usize = 0
+    while unsafe Pointer.read(unsafe Pointer.at(pointer, offset)) != 0 {
+      let entry = unsafe Pointer.assumeMany(unsafe Pointer.at(pointer, offset))
+      let mut length: usize = 0
+      while unsafe Pointer.read(unsafe Pointer.at(entry, length)) != 0 { length = length + 1 }
+      let units = unsafe Pointer.borrowMany(&block, entry, length)
+      if let Option<usize>.Some { value: end } = EnvironmentEntry.separator(units) {
+        // Drive-current-directory entries begin with '=' and cannot be represented by
+        // ChildProcess.setVariableBytes. Every normal variable is inherited exactly.
+        if end > 0 && units[0] != 61 {
+          let name = run Wtf8.encode(Slice.view(units, 0, end))
+          let value = run Wtf8.encode(Slice.view(units, end + 1, units.length - end - 1))
+          run ChildProcess.setVariableBytes(request, Bytes.asSlice(&name), Bytes.asSlice(&value))
+        }
+      }
+      offset = offset + length + 1
+    }
+  }
+}

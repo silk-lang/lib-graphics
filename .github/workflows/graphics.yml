@@ -18,9 +18,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -29,44 +26,61 @@ jobs:
             ~/.silk
           key: graphics-native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('toolchains.lock.json', '**/silk.toml') }}
       - name: Bootstrap pinned Silk
-        run: node scripts/install-silk.mjs
+        run: |
+          if ! test -x /usr/bin/clang-22 || ! test -x /usr/lib/llvm-22/bin/ld.lld; then
+            sudo apt-get update
+            sudo apt-get install -y clang-22 lld-22
+          fi
+          echo "SILK_CLANG=/usr/bin/clang-22" >> "$GITHUB_ENV"
+          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
+          curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.sh | SILK_RELEASE='v0.1.0-dev.64+8214c402307b' sh
+          echo "$HOME/.silk/bin" >> "$GITHUB_PATH"
       - name: Fetch the exact native dependency through Silk
         run: silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
       - name: Prepare pinned native toolchain and lavapipe
-        run: node "$(node scripts/native-root.mjs)/scripts/setup-ci.mjs" --linux-gpu
+        run: silk task setup-ci --linux-gpu
       - name: Check all packages and compare native renderers
-        run: node scripts/check.mjs
+        run: silk task check
   browser:
     name: Renderer fixtures on navigator.gpu
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
       - name: Bootstrap pinned Silk
-        run: node scripts/install-silk.mjs
+        run: |
+          if ! test -x /usr/bin/clang-22 || ! test -x /usr/lib/llvm-22/bin/ld.lld; then
+            sudo apt-get update
+            sudo apt-get install -y clang-22 lld-22
+          fi
+          echo "SILK_CLANG=/usr/bin/clang-22" >> "$GITHUB_ENV"
+          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
+          curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.sh | SILK_RELEASE='v0.1.0-dev.64+8214c402307b' sh
+          echo "$HOME/.silk/bin" >> "$GITHUB_PATH"
       - name: Fetch the exact native dependency through Silk
         run: silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
-      - name: Install browser display prerequisites
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb xauth
-      - name: Prepare existing Chromium and pinned Playwright JavaScript
-        run: node "$(node scripts/native-root.mjs)/scripts/setup-ci.mjs" --browser
+      - name: Prepare installed Chromium and native display prerequisites
+        run: silk task setup-ci --browser
       - name: Build wasm and compare the browser renderer
-        run: node scripts/test-browser.mjs
+        run: silk task test-browser
   benchmarks:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: node scripts/install-silk.mjs
+      - name: Bootstrap pinned Silk
+        run: |
+          if ! test -x /usr/bin/clang-22 || ! test -x /usr/lib/llvm-22/bin/ld.lld; then
+            sudo apt-get update
+            sudo apt-get install -y clang-22 lld-22
+          fi
+          echo "SILK_CLANG=/usr/bin/clang-22" >> "$GITHUB_ENV"
+          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
+          curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.sh | SILK_RELEASE='v0.1.0-dev.64+8214c402307b' sh
+          echo "$HOME/.silk/bin" >> "$GITHUB_PATH"
       - run: silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
-      - run: node "$(node scripts/native-root.mjs)/scripts/setup-ci.mjs" --linux-gpu
-      - run: node scripts/bench-vector.mjs
-      - run: node scripts/bench-filters.mjs
-      - run: node scripts/bench-ui-renderer.mjs
+      - run: silk task setup-ci --linux-gpu
+      - run: silk task bench vector
+      - run: silk task bench filters
+      - run: silk task bench ui-renderer

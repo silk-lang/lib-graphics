@@ -3,7 +3,11 @@ static if Intrinsic.targetOperatingSystem() == "windows" {
 }
 
 //! JPEG decode wall time excludes input I/O, output hashing and destruction.
-//! Built as a temporary executable package by scripts/diagnostics/bench-jpeg.py.
+//! Built in place by `silk task bench-jpeg` using the release-optimized `jpeg-bench`
+//! executable profile; the library sources are not copied or rewritten.
+//! Direct protocol: graphics-codec decode FILE ITERATIONS WARMUP. FILE is relative
+//! to the process working directory. Timing excludes I/O and output consumption;
+//! the task's optional Linux Callgrind count covers the entire process instead.
 import jpeg
 import jpeg_header { JpegError }
 import image { ImageError }

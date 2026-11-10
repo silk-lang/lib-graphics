@@ -17,4 +17,4 @@ cubics with handle ratio 0.5522847498307936, stars are ten lines.
 
 Each program renders each scene for the requested number of frames, prints `scene ms-per-frame`
 lines (median of the frames), and writes the last frame as `<prefix>-<scene>.rgba`
-(premultiplied RGBA8) so `node scripts/bench-vector.mjs` can compare the two images.
+(premultiplied RGBA8) so `silk task bench vector` can compare the two images.

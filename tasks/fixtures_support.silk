@@ -1,0 +1,187 @@
+import support
+import silk.cli.task { Task, TaskError }
+import silk.collections.bytes { Bytes }
+import silk.collections.slice { Slice }
+import silk.io.writer { WriterError }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+import silk.system.child_process { ChildProcess, ProcessError }
+import silk.system.filesystem { FileSystem, FileError }
+import silk.system.host_input { HostInput, HostInputError }
+import silk.text.string { String }
+import silk.num.u8
+import silk.num.usize
+import silk.core.effect { Effect }
+import silk.collections.list { List }
+import silk.system.filesystem { Path }
+
+pub effect fn failTask(message: string) -> () ! TaskError | OutOfMemoryError ? &mut Allocator {
+  fail TaskError { message: run String.copy(message), status: 1 }
+}
+pub effect fn byte(out: &mut Bytes, value: u8) -> () ! OutOfMemoryError ? &mut Allocator {
+  let one: [u8; 1] = [value]
+  run Bytes.append(&mut out.*, &one)
+}
+pub effect fn number(out: &mut Bytes, value: usize) -> () ! OutOfMemoryError ? &mut Allocator {
+  if value >= 10 { run number(&mut out.*, value / 10) }
+  run byte(&mut out.*, usize.toU8(value % 10) + 48)
+}
+pub effect fn decimal(value: usize) -> Bytes ! OutOfMemoryError ? &mut Allocator {
+  let mut result = Bytes.make()
+  run number(&mut result, value)
+  return move result
+}
+pub effect fn literal(data: &[u8]) -> Bytes ! OutOfMemoryError ? &mut Allocator {
+  let mut out = run Bytes.makeWithCapacity(data.length * 4 + 3)
+  run Bytes.append(&mut out, b"b\"")
+  let hex = b"0123456789abcdef"
+  let mut i: usize = 0
+  while i < data.length {
+    let v = u8.toUsize(data[i])
+    let part: [u8; 4] = [92, 120, hex[v / 16], hex[v % 16]]
+    run Bytes.append(&mut out, &part)
+    i = i + 1
+  }
+  run byte(&mut out, 34)
+  return move out
+}
+pub effect fn render(out: &mut Bytes, template: string, values: &[string]) -> ()
+  ! OutOfMemoryError ? &mut Allocator {
+  let text = String.utf8Bytes(template)
+  let mut i: usize = 0
+  let mut start: usize = 0
+  while i < text.length {
+    if i + 2 < text.length && text[i] == 64 && text[i+2] == 64 && text[i+1] >= 48 && text[i+1] <= 57 {
+      run Bytes.append(&mut out.*, Slice.view<u8>(text, start, i - start))
+      run Bytes.append(&mut out.*, String.utf8Bytes(values[u8.toUsize(text[i+1] - 48)]))
+      i = i + 3
+      start = i
+    } else { i = i + 1 }
+  }
+  run Bytes.append(&mut out.*, Slice.view<u8>(text, start, text.length - start))
+}
+pub effect fn join(parts: &[&[u8]]) -> Bytes ! OutOfMemoryError ? &mut Allocator {
+  let mut size: usize = 0
+  let mut i: usize = 0
+  while i < parts.length { size = size + parts[i].length i = i + 1 }
+  let mut out = run Bytes.makeWithCapacity(size)
+  i = 0
+  while i < parts.length { run Bytes.append(&mut out, parts[i]) i = i + 1 }
+  return move out
+}
+pub effect fn repeated(value: u8, count: usize) -> Bytes ! OutOfMemoryError ? &mut Allocator {
+  let mut out = run Bytes.zeroed(count)
+  let data = out.asMutSlice()
+  let mut i: usize = 0
+  while i < count { data[i] = value i = i + 1 }
+  return move out
+}
+pub effect fn be(out: &mut Bytes, value: usize, count: usize) -> () ! OutOfMemoryError ? &mut Allocator {
+  let mut i = count
+  while i > 0 {
+    i = i - 1
+    run byte(&mut out.*, usize.toU8(usize.shiftRight(value, i * 8) & 255))
+  }
+}
+pub fn get16(data: &[u8], at: usize) -> usize {
+  return u8.toUsize(data[at]) * 256 + u8.toUsize(data[at + 1])
+}
+pub effect fn marker(data: &[u8], kind: u8, start: usize) -> usize
+  ! TaskError | OutOfMemoryError ? &mut Allocator {
+  let mut i = start
+  while i + 1 < data.length {
+    if data[i] == 255 && data[i+1] == kind { return i }
+    i = i + 1
+  }
+  run failTask("Expected JPEG marker was not emitted by cjpeg")
+  return 0
+}
+pub effect fn segment(kind: u8, payload: &[u8]) -> Bytes ! OutOfMemoryError ? &mut Allocator {
+  let mut out = run Bytes.makeWithCapacity(payload.length + 4)
+  run byte(&mut out, 255)
+  run byte(&mut out, kind)
+  run be(&mut out, payload.length + 2, 2)
+  run Bytes.append(&mut out, payload)
+  return move out
+}
+pub effect fn insert(data: &[u8], at: usize, extra: &[u8]) -> Bytes ! OutOfMemoryError ? &mut Allocator {
+  return run join(&[Slice.view<u8>(data, 0, at), extra, Slice.view<u8>(data, at, data.length - at)])
+}
+pub effect fn changed(data: &[u8], at: usize, value: u8) -> Bytes ! OutOfMemoryError ? &mut Allocator {
+  let mut out = run Bytes.copy(data)
+  let bytes = out.asMutSlice()
+  bytes[at] = value
+  return move out
+}
+pub effect fn saveSource(name: string, source: &[u8]) -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let path = run join(&[b"modules/codec/src/", String.utf8Bytes(name)])
+  let relative = run support.text(path.asSlice())
+  run support.save(relative, source)
+  run Task.silk(&["format", relative])
+}
+// The external compressor is independent of the codec's Silk deflate implementation.
+// gzip -n emits a ten-byte header, raw DEFLATE, and an eight-byte trailer.
+pub effect fn zlib(data: &[u8]) -> Bytes ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let root = run Task.root()
+  let temporary = run FileSystem.temporaryDirectory(&root, ".png-fixtures-")
+  let input = run Path.join(&temporary.path, "input")
+  let compressed = run gzipFile(&input, data)
+    |> Effect.ensuring(FileSystem.releaseIgnored(move temporary))
+  let bytes = compressed.asSlice()
+  if bytes.length < 18 || bytes[0] != 31 || bytes[1] != 139 || bytes[2] != 8 || bytes[3] != 0 {
+    run failTask("gzip -n produced an unsupported gzip header")
+  }
+  let mut out = run Bytes.makeWithCapacity(bytes.length - 12)
+  run Bytes.append(&mut out, b"\x78\x9c")
+  run Bytes.append(&mut out, Slice.view<u8>(bytes, 10, bytes.length - 18))
+  let mut a: usize = 1
+  let mut b: usize = 0
+  let mut i: usize = 0
+  while i < data.length { a = (a + u8.toUsize(data[i])) % 65521 b = (b + a) % 65521 i = i + 1 }
+  run be(&mut out, b * 65536 + a, 4)
+  return move out
+}
+effect fn gzipFile(input: &Path, data: &[u8]) -> Bytes ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  run FileSystem.writeFile(input, data)
+  let name = run support.stringPath(input)
+  return run Task.capture("gzip", &["-n", "-c", name])
+}
+pub effect fn encode(pixels: &[u8], width: usize, height: usize, gray: bool, quality: string,
+  sampling: string, progressive: bool, restart: string) -> Bytes ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let mut pnm = Bytes.make()
+  if gray { run Bytes.append(&mut pnm, b"P5\n") } else { run Bytes.append(&mut pnm, b"P6\n") }
+  run number(&mut pnm, width)
+  run byte(&mut pnm, 32)
+  run number(&mut pnm, height)
+  run Bytes.append(&mut pnm, b"\n255\n")
+  run Bytes.append(&mut pnm, pixels)
+  let root = run Task.root()
+  let temporary = run FileSystem.temporaryDirectory(&root, ".jpeg-fixtures-")
+  let input = run Path.join(&temporary.path, "input.pnm")
+  return run cjpegFile(&input, pnm.asSlice(), quality, sampling, progressive, restart)
+    |> Effect.ensuring(FileSystem.releaseIgnored(move temporary))
+}
+effect fn cjpegFile(input: &Path, data: &[u8], quality: string, sampling: string,
+  progressive: bool, restart: string) -> Bytes ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  run FileSystem.writeFile(input, data)
+  let name = run support.stringPath(input)
+  let mut args = List<string>.make()
+  run args.append("-quality")
+  run args.append(quality)
+  run args.append("-sample")
+  run args.append(sampling)
+  run args.append("-restart")
+  run args.append(restart)
+  if progressive { run args.append("-progressive") }
+  run args.append(name)
+  return run Task.capture("cjpeg", args.asSlice())
+}
+pub effect fn saveJpeg(name: string, bytes: &[u8]) -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let target = run join(&[b"modules/codec/tests/jpeg/", String.utf8Bytes(name), b".jpg"])
+  run support.save(run support.text(target.asSlice()), bytes)
+}

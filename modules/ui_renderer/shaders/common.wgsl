@@ -1,4 +1,4 @@
-// Shared by every UI pipeline (scripts/embed-shaders prepends it). Coordinates are device pixels,
+// Shared by every UI pipeline (silk task embed-shaders prepends it). Coordinates are device pixels,
 // y down. Colors leave the fragment shaders premultiplied; the pipelines blend source-over.
 struct Globals {
   // Target width and height in pixels.

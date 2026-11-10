@@ -64,7 +64,7 @@ test effect fn rejectsAcRunPastBlock() -> ()
   )
   run Testing.expect(
     match &result {
-      Result<[i32; 64], JpegError>.Failure { error } => true
+      Result<[i32; 64], JpegError>.Failure { error: _ } => true
       _ => false
     },
     "run cannot overrun coefficient array",

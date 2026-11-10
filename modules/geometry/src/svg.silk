@@ -332,7 +332,7 @@ pub effect fn points(data: &[u8], close: bool) -> Path
     }
   }
   if close && !Path.isEmpty(&path) {
-    let accepted = run Path.append(&mut path, Segment.Close)
+    drop run Path.append(&mut path, Segment.Close)
   }
   return move path
 }

@@ -8,7 +8,6 @@ import silk.num.u8
 import silk.num.u32
 import silk.num.u64
 import silk.num.i64
-import silk.num.usize
 import silk.system.monotonic_clock { MonotonicClock }
 import silk.system.monotonic_clock_native { OsMonotonicClock }
 import silk.system.system_clock { Instant, SystemClock }
@@ -24,7 +23,7 @@ static if Intrinsic.targetOperatingSystem() == "windows" {
 }
 
 import silk.collections.bytes { Bytes }
-import vector.geometry { Affine, Rect, rectAt }
+import vector.geometry { Affine, rectAt }
 import vector.path { Path }
 import vector.strips { Rasterizer, Coverage, NONZERO, EVENODD }
 import vector.stroke { Stroke, Stroker, JOIN_ROUND, CAP_BUTT }

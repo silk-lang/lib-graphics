@@ -1,23 +1,23 @@
 //! PNG encoding contracts; references link to the public PNG specifications.
 import image { Image, ImageError }
 import png
-import png_decode_tests
-import png_invalid_tests
-import png_metadata_tests
-import jpeg_metadata_tests
-import orientation_tests
-import icc_tests
-import decode_tests
-import jpeg_header_tests
-import jpeg_invalid_tests
-import jpeg_entropy_tests
-import jpeg_coefficients_tests
-import jpeg_idct_tests
-import jpeg_decode_tests
-import jpeg_progressive_tests
-import jpeg_progressive_image_tests
-import jpeg_progressive_scan_tests
-import jpeg_progressive_invalid_tests
+import png_decode_tests as _pngDecodeTests
+import png_invalid_tests as _pngInvalidTests
+import png_metadata_tests as _pngMetadataTests
+import jpeg_metadata_tests as _jpegMetadataTests
+import orientation_tests as _orientationTests
+import icc_tests as _iccTests
+import decode_tests as _decodeTests
+import jpeg_header_tests as _jpegHeaderTests
+import jpeg_invalid_tests as _jpegInvalidTests
+import jpeg_entropy_tests as _jpegEntropyTests
+import jpeg_coefficients_tests as _jpegCoefficientsTests
+import jpeg_idct_tests as _jpegIdctTests
+import jpeg_decode_tests as _jpegDecodeTests
+import jpeg_progressive_tests as _jpegProgressiveTests
+import jpeg_progressive_image_tests as _jpegProgressiveImageTests
+import jpeg_progressive_scan_tests as _jpegProgressiveScanTests
+import jpeg_progressive_invalid_tests as _jpegProgressiveInvalidTests
 import silk.collections.bytes { Bytes }
 import silk.collections.slice { Slice }
 import silk.compress.checksum { CompressionChecksum }
@@ -58,7 +58,7 @@ effect fn rejectedSize(width: u32, height: u32, expected: ImageError) -> bool
     Result<Image, ImageError | OutOfMemoryError>.Success { value: _ } => false
     Result<Image, ImageError | OutOfMemoryError>.Failure { error } => match &error {
       ImageError problem => problem == expected
-      OutOfMemoryError problem => {
+      OutOfMemoryError _ => {
         fail OutOfMemoryError {}
       }
     }
@@ -308,7 +308,7 @@ effect fn rejectedPixels(width: u32, height: u32, pixels: &[u8], expected: Image
     Result<Bytes, ImageError | OutOfMemoryError>.Success { value: _ } => false
     Result<Bytes, ImageError | OutOfMemoryError>.Failure { error } => match &error {
       ImageError problem => problem == expected
-      OutOfMemoryError problem => {
+      OutOfMemoryError _ => {
         fail OutOfMemoryError {}
       }
     }

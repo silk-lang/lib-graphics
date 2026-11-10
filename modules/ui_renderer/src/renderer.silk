@@ -26,7 +26,6 @@ import webgpu.resources { BindGroup, Buffer, CommandEncoder, Queue, RenderPipeli
 import webgpu.runtime { Device, GpuError }
 import webgpu.descriptors {
   BindGroupDescriptor,
-  BindGroupEntry,
   BlendComponent,
   BlendState,
   Color as ClearColor,
@@ -49,7 +48,7 @@ import gpu_scene.filter { FilterImage, FilterRenderer }
 import vector.filter { BlurPlan, Region }
 import ui_scene.effects { LayerEffects }
 import ui_scene.primitives { LayerSprite }
-import ui_scene.scene { Batch, PrimitiveKind, Scene }
+import ui_scene.scene { PrimitiveKind, Scene }
 import ui_scene.scroll { Placements, ScrollPosition }
 import atlas_textures { GpuAtlas }
 import instances {

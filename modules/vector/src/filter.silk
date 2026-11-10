@@ -20,7 +20,6 @@ import silk.num.i64
 import silk.num.u8
 import silk.num.u32
 import silk.num.u64
-import silk.simd.simd
 import silk.simd.u8x16
 import silk.simd.u32x4
 import silk.simd.i32x4

@@ -1,10 +1,11 @@
 //! The browser test: a wasm module with lib-native's modules/gpu/webgpu sample ABI (`sample_start`, `sample_poll`,
 //! `sample_drop`, `host.sample_output`) that renders fixture `index % COUNT` with `UiRenderer`
 //! on `navigator.gpu`, RGBA8 for the first `COUNT` indices and BGRA8 for the next, and outputs the
-//! GPU pixels (kind 1) and the CPU reference (kind 2). `scripts/test-browser.mjs` compares them.
+//! GPU pixels (kind 1) and the CPU reference (kind 2). `silk task test-browser` compares them.
 static if Intrinsic.targetArchitecture() == "wasm32" {
-  import browser
-  import generated_webgpu_exports
+  // Linked for their exported wasm entry points; nothing here names them.
+  import browser as _browser
+  import generated_webgpu_exports as _webgpuExports
 
   pub fn main() -> i32 {
     return 0

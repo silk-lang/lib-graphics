@@ -15,7 +15,6 @@ import silk.num.u32
 import silk.num.u64
 import silk.num.usize
 import silk.num.i64
-import silk.num.i32
 import silk.core.target { Target }
 
 // Baseline x86-64 has no FMA instruction. SIMD mulAdd otherwise lowers to a

@@ -1,0 +1,255 @@
+//! Standalone JPEG diagnostic, not SVG rendering or a reference-engine comparison.
+//! Dispatch as `silk task bench jpeg INPUT... --output REPORT.json`, with typed
+//! `--samples` (3), `--iterations` (5), `--warmup` (1), and `--callgrind` (false).
+//! Paths are relative to the invocation directory. Builds the codec's jpeg-bench
+//! executable profile (speed optimization, no debug information) without copying sources.
+//! Requires native GNU coreutils `timeout` on Linux, `gtimeout` on macOS, or
+//! native busybox-w32 `busybox.exe` on Windows, preserving 300s build/Callgrind
+//! and 120s sample deadlines. Callgrind additionally requires Linux and Valgrind.
+//! Report fields match the former diagnostic; platform identifies the native target.
+import support
+import silk.cli.task { Task, TaskError }
+import silk.collections.bytes { Bytes }
+import silk.collections.list { List }
+import silk.core.effect { Effect }
+import silk.core.option { Option }
+import silk.core.result { Result }
+import silk.crypto.sha2 { Sha256 }
+import silk.io.writer { Writer, WriterError }
+import silk.json.output { JsonOptions }
+import silk.json.scanner { JsonError }
+import silk.json.value { Json, JsonEntry, JsonNumber, Value }
+import silk.mem.allocator { Allocator, OutOfMemoryError, SystemAllocator }
+import silk.system.child_process { ChildProcess, ProcessError }
+import silk.system.filesystem { FileError, FileSystem, Path }
+import silk.system.host_input { HostInput, HostInputError }
+import silk.text.format { Format, ParseError }
+import silk.text.string { String, Split }
+import silk.num.u8
+import silk.num.u32
+import silk.num.u64
+import silk.num.usize
+static if Intrinsic.targetOperatingSystem() == "windows" {
+  import silk.platform.windows.path { WindowsPath }
+}
+
+struct Buffer {
+  bytes: Bytes,
+  allocator: SystemAllocator,
+}
+impl Writer for Buffer {
+  effect fn writeAll(self: &mut Self, bytes: &[u8]) -> () ! WriterError ? &mut Writer {
+    match move run Effect.result(Bytes.append(&mut self.bytes, bytes))
+      |> Effect.provideMut<Allocator>(&mut self.allocator) {
+      Result<(), OutOfMemoryError>.Success { .. } => {}
+      Result<(), OutOfMemoryError>.Failure { .. } => { fail Writer.failure() }
+    }
+  }
+  effect fn flush(self: &mut Self) -> () ! WriterError ? &mut Writer {}
+}
+fn buffer() -> Buffer {
+  return Buffer { bytes: Bytes.make(), allocator: Allocator.systemAllocatorProvider() }
+}
+effect fn decimal(value: u32) -> String ! TaskError | WriterError | OutOfMemoryError ? &mut Allocator {
+  let mut result = buffer()
+  run Format.format("{value}", &.{ value: value }) |> Effect.provideMut<Writer>(&mut result)
+  return run String.copy(run support.text(Bytes.asSlice(&result.bytes)))
+}
+effect fn jsonFailure<T>(error: JsonError) -> T ! TaskError | OutOfMemoryError ? &mut Allocator {
+  drop error
+  run Task.abort("Invalid JPEG diagnostic JSON")
+}
+effect fn parse(bytes: &[u8]) -> Value ! TaskError | OutOfMemoryError ? &mut Allocator {
+  return run Effect.catch<JsonError>(Json.parse(bytes), effect fn(error: JsonError) -> Value ! TaskError | OutOfMemoryError ? &mut Allocator {
+    return run jsonFailure<Value>(move error)
+  })
+}
+effect fn textField<'a>(value: &'a Value, name: string) -> string<'a>
+  ! TaskError | OutOfMemoryError ? &mut Allocator {
+  return match Json.asString(Json.field(value, name)) {
+    Option<string>.Some { value: found } => found
+    Option<string>.None => run Task.abort("Missing or invalid diagnostic string field")
+  }
+}
+effect fn integer(value: &Value, name: string) -> u64 ! TaskError | OutOfMemoryError ? &mut Allocator {
+  return match Json.asU64(Json.field(value, name)) {
+    Option<u64>.Some { value: found } => found
+    Option<u64>.None => run Task.abort("Missing or invalid diagnostic integer field")
+  }
+}
+effect fn unsigned(text: string) -> u64 ! TaskError | OutOfMemoryError ? &mut Allocator {
+  return match u64.parse(text) {
+    Result<u64, ParseError>.Success { value } => value
+    Result<u64, ParseError>.Failure { .. } => run Task.abort("Invalid unsigned diagnostic count")
+  }
+}
+effect fn put(entries: &mut List<JsonEntry>, key: string, value: Value) -> ()
+  ! OutOfMemoryError ? &mut Allocator {
+  run List<JsonEntry>.append(&mut entries.*, JsonEntry { key: run String.copy(key), value: move value })
+}
+fn number(value: u64) -> Value { return Value.Number { value: JsonNumber.Unsigned { value: value } } }
+effect fn stringValue(value: string) -> Value ! OutOfMemoryError ? &mut Allocator {
+  return Value.String { text: run String.copy(value) }
+}
+effect fn sha256(bytes: &[u8]) -> String ! TaskError | OutOfMemoryError ? &mut Allocator {
+  let digest = Sha256.hash(bytes)
+  let alphabet = b"0123456789abcdef"
+  let mut encoded: [u8; 64] = [0; 64]
+  let mut at: usize = 0
+  while at < 32 {
+    encoded[at * 2] = alphabet[u8.toUsize(digest[at] / 16)]
+    encoded[at * 2 + 1] = alphabet[u8.toUsize(digest[at] % 16)]
+    at = at + 1
+  }
+  return run String.copy(run support.text(&encoded))
+}
+effect fn resolve(base: &Path, value: string) -> Path ! FileError | OutOfMemoryError ? &mut Allocator {
+  static if Intrinsic.targetOperatingSystem() == "windows" {
+    return run WindowsPath.resolve(base, value)
+  } else {
+    if String.startsWith(value, "/") {
+      let root = run Path.root()
+      return run Path.resolve(&root, String.slice(value, 1, String.byteLength(value) - 1))
+    }
+    return run Path.resolve(base, value)
+  }
+}
+effect fn callgrind(binary: string, input: string, cwd: &Path, root: &Path) -> u64
+  ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let temporary = run FileSystem.temporaryDirectory(root, ".jpeg-callgrind-")
+  let counts = run Path.join(&temporary.path, "callgrind.out")
+  return run countInstructions(binary, input, cwd, &counts)
+    |> Effect.ensuring(FileSystem.releaseIgnored(move temporary))
+}
+effect fn countInstructions(binary: string, input: string, cwd: &Path, counts: &Path) -> u64
+  ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let mut option = run String.copy("--callgrind-out-file=")
+  run String.append(&mut option, run support.stringPath(counts))
+  let result = run support.timed("valgrind", &["--tool=callgrind", String.view(&option), binary, "decode", input, "1", "0"], "300", cwd)
+  drop result
+  let bytes = run FileSystem.readFile(counts)
+  let mut lines = String.split(run support.text(Bytes.asSlice(&bytes)), "\n")
+  while let Option<string>.Some { value: line } = Split.next(&mut lines) {
+    if String.startsWith(line, "summary:") {
+      return run unsigned(String.trim(String.slice(line, 8, String.byteLength(line) - 8)))
+    }
+  }
+  run Task.abort("Callgrind output has no summary instruction count")
+}
+
+pub effect fn perform(inputs: &[String], samples: u32, iterations: u32, warmup: u32, collectIr: bool, output: string) -> ()
+  ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  if inputs.length == 0 || output == "" || samples < 1 || iterations < 1 || iterations > 100000 || warmup > 10000 {
+    run Task.abort("Require input(s), --output, samples >= 1, iterations 1..100000 and warmup 0..10000")
+  }
+  let os = support.OS
+  let arch = support.ARCH
+  if (arch != "aarch64" && arch != "x86_64") || (os != "darwin" && os != "linux" && os != "windows") {
+    run Task.abort("Unsupported native target")
+  }
+  if collectIr && os != "linux" { run Task.abort("Callgrind requires Linux") }
+  let root = run Task.root()
+  let invocation = run Task.invocationDirectory()
+  let destination = run resolve(&invocation, output)
+  let lockBytes = run support.read("toolchains.lock.json")
+  let lock = run parse(Bytes.asSlice(&lockBytes))
+  let version = match Json.asString(Json.field(&lock, "silk") |> Json.fieldAt("version")) {
+    Option<string>.Some { value } => value
+    Option<string>.None => run Task.abort("toolchains.lock.json has no silk.version")
+  }
+  let mut target = run String.copy(arch)
+  run String.append(&mut target, if os == "darwin" { "-apple-darwin" } else if os == "linux" { "-unknown-linux-gnu" } else { "-pc-windows-msvc" })
+  let compiler = run support.compiler()
+  let built = run support.timed(String.view(&compiler), &["build", "--manifest-path", "modules/codec/silk.toml", "--profile", "jpeg-bench"], "300", &root)
+  run support.output(ChildProcess.outputBytes(&built))
+  run support.errors(ChildProcess.errorBytes(&built))
+  let mut binaryName = run String.copy("build/llvm/")
+  run String.append(&mut binaryName, String.view(&target))
+  run String.append(&mut binaryName, "/jpeg-bench/graphics-codec")
+  if os == "windows" { run String.append(&mut binaryName, ".exe") }
+  let binary = run support.path(String.view(&binaryName))
+  let binaryBytes = run FileSystem.readFile(&binary)
+  let binaryHash = run sha256(Bytes.asSlice(&binaryBytes))
+  let iterationText = run decimal(iterations)
+  let warmupText = run decimal(warmup)
+  let mut measurements = List<Value>.make()
+  let mut inputIndex: usize = 0
+  while inputIndex < inputs.length {
+    let source = run resolve(&invocation, String.view(&inputs[inputIndex]))
+    let sourceName = match Path.name(&source) {
+      Option<string>.Some { value } => value
+      Option<string>.None => run Task.abort("Input name is not UTF-8")
+    }
+    let directory = match move run Path.parent(&source) {
+      Option<Path>.Some { value } => move value
+      Option<Path>.None => run Task.abort("Input must name a file")
+    }
+    let inputBytes = run FileSystem.readFile(&source)
+    let inputHash = run sha256(Bytes.asSlice(&inputBytes))
+    let mut results = List<Value>.make()
+    let mut times = List<u64>.make()
+    let mut expected: u64 = 0
+    let mut sample: u32 = 0
+    while sample < samples {
+      let result = run support.timed(run support.stringPath(&binary), &["decode", sourceName, String.view(&iterationText), String.view(&warmupText)], "120", &directory)
+      let document = run parse(ChildProcess.outputBytes(&result))
+      let checksum = run unsigned(run textField(&document, "checksum"))
+      let consumed = run unsigned(run textField(&document, "consumed"))
+      let elapsed = run integer(&document, "elapsed_ns")
+      if sample == 0 { expected = checksum }
+      if checksum != expected { run Task.abort("Unstable output checksum") }
+      let measuredIterations = run integer(&document, "iterations")
+      let measuredWarmup = run integer(&document, "warmup")
+      if elapsed == 0 || measuredIterations != u32.toU64(iterations)
+        || measuredWarmup != u32.toU64(warmup)
+        || consumed != u64.wrappingMultiply(checksum, u32.toU64(iterations + warmup)) {
+        run Task.abort("Invalid timing or output consumption")
+      }
+      run times.append(elapsed)
+      run results.append(move document)
+      sample = sample + 1
+    }
+    run times.sort()
+    let sorted = times.asSlice()
+    let middle = sorted.length / 2
+    let mut median = u64.toF64(sorted[middle]) / u32.toF64(iterations) / 1000000.0
+    if sorted.length % 2 == 0 {
+      median = (median + u64.toF64(sorted[middle - 1]) / u32.toF64(iterations) / 1000000.0) / 2.0
+    }
+    let first = &results.asSlice()[0]
+    let mut row = List<JsonEntry>.make()
+    run put(&mut row, "input", run stringValue(sourceName))
+    run put(&mut row, "input_sha256", Value.String { text: move inputHash })
+    run put(&mut row, "bytes", number(usize.toU64(Bytes.asSlice(&inputBytes).length)))
+    run put(&mut row, "width", number(run integer(first, "width")))
+    run put(&mut row, "height", number(run integer(first, "height")))
+    run put(&mut row, "checksum", run stringValue(run textField(first, "checksum")))
+    run put(&mut row, "median_ms", Value.Number { value: JsonNumber.Float { value: median } })
+    run put(&mut row, "native_samples", Value.Array { values: move results })
+    if collectIr { run put(&mut row, "process_ir", number(run callgrind(run support.stringPath(&binary), sourceName, &directory, &root))) }
+    run measurements.append(Value.Object { entries: move row })
+    let mut line = buffer()
+    run Format.format("{name}: {median:.4} ms/decode\n", &.{ name: sourceName, median: median }) |> Effect.provideMut<Writer>(&mut line)
+    run support.output(Bytes.asSlice(&line.bytes))
+    inputIndex = inputIndex + 1
+  }
+  let mut report = List<JsonEntry>.make()
+  run put(&mut report, "silk_version", run stringValue(version))
+  run put(&mut report, "platform", Value.String { text: move target })
+  run put(&mut report, "samples", number(u32.toU64(samples)))
+  run put(&mut report, "iterations", number(u32.toU64(iterations)))
+  run put(&mut report, "warmup", number(u32.toU64(warmup)))
+  run put(&mut report, "binary_sha256", Value.String { text: move binaryHash })
+  run put(&mut report, "measurements", Value.Array { values: move measurements })
+  let document = Value.Object { entries: move report }
+  let options = JsonOptions.indented(2)
+  let mut encoded = buffer()
+  run Effect.catch<JsonError>(Json.writeWith(&document, &options), effect fn(error: JsonError) -> () ! TaskError | OutOfMemoryError ? &mut Allocator {
+    return run jsonFailure<()>(move error)
+  }) |> Effect.provideMut<Writer>(&mut encoded)
+  run Bytes.append(&mut encoded.bytes, b"\n")
+  run FileSystem.writeFileWithParents(&destination, Bytes.asSlice(&encoded.bytes))
+}

@@ -82,7 +82,7 @@ impl Session {
     ? &mut Allocator {
     let previous = Intrinsic.replace(self.stage, Failed {})
     match move previous {
-      Failed failed => {
+      Failed {} => {
         fail GpuError.status(0xffffffff)
       }
       FindingAdapter { request } => {

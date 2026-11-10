@@ -1,4 +1,4 @@
-// Blend-mode math shared by compose.wgsl and filter.wgsl (scripts/embed-shaders prepends it),
+// Blend-mode math shared by compose.wgsl and filter.wgsl (silk task embed-shaders prepends it),
 // matching vector.layer on premultiplied bytes.
 
 const NORMAL: u32 = 0u;

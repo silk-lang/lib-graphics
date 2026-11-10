@@ -1,0 +1,227 @@
+import support
+import fixtures_support as f
+import fixtures_templates as t
+import silk.cli.task { TaskError }
+import silk.collections.bytes { Bytes }
+import silk.collections.slice { Slice }
+import silk.io.writer { WriterError }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+import silk.system.child_process { ChildProcess, ProcessError }
+import silk.system.filesystem { FileSystem, FileError }
+import silk.system.host_input { HostInput, HostInputError }
+import silk.text.string { String }
+import silk.num.u8
+import silk.num.usize
+
+pub effect fn baseline() -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let names = ["baselineGray", "progressiveGray", "baselineRgb", "progressiveRgb", "orientedRgb"]
+  let mut source = run Bytes.copy(String.utf8Bytes(t.jpeg0))
+  let mut valid = Bytes.make()
+  let mut i: usize = 0
+  while i < names.length {
+    let gray = i < 2
+    let progressive = i == 1 || i == 3
+    let orientation: u8 = if i == 4 { 6 } else { 1 }
+    let mut pixels = Bytes.make()
+    let mut p: usize = 0
+    while p < 63 {
+      if gray { run f.byte(&mut pixels, 128) } else { run Bytes.append(&mut pixels, b"\xb4\x32\x5a") }
+      p = p + 1
+    }
+    let sampling = if gray { "1x1" } else { "2x2,1x1,1x1" }
+    let encoded = run f.encode(pixels.asSlice(), 9, 7, gray, "95", sampling, progressive, "0B")
+    // Original Pillow EXIF payload: big-endian TIFF with one SHORT orientation entry.
+    let mut exif = run Bytes.copy(b"Exif\0\0MM\0\x2a\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\0\0\0\0\0\0\0")
+    let exifBytes = exif.asMutSlice()
+    exifBytes[25] = orientation
+    let app1 = run f.segment(225, exif.asSlice())
+    let data = run f.insert(encoded.asSlice(), 2, app1.asSlice())
+    run f.saveJpeg(names[i], data.asSlice())
+    let literal = run f.literal(data.asSlice())
+    let orientationText = run f.decimal(u8.toUsize(orientation))
+    run f.render(&mut source, t.jpeg1, &[names[i], run support.text(literal.asSlice()),
+      if progressive { "true" } else { "false" }, run support.text(orientationText.asSlice()), if gray { "1" } else { "3" }])
+    if i == 2 { valid = run Bytes.copy(data.asSlice()) }
+    i = i + 1
+  }
+  run f.saveSource("jpeg_header_tests.silk", source.asSlice())
+  let sof = run f.marker(valid.asSlice(), 192, 0)
+  let sos = run f.marker(valid.asSlice(), 218, 0)
+  let headerEnd = sos + 2 + f.get16(valid.asSlice(), sos + 2)
+  let offsets = [sof+11, sos+5, sos+6, sos+4, sof+13]
+  let values: [u8; 5] = [0, 99, 68, 0, valid.asSlice()[sof+10]]
+  let invalidNames = ["zeroSampling", "unknownScanComponent", "invalidHuffmanSelector", "emptyScan", "duplicateComponent"]
+  let mut invalid = run Bytes.copy(String.utf8Bytes(t.jpeg2))
+  i = 0
+  while i < offsets.length {
+    let data = run f.changed(valid.asSlice(), offsets[i], values[i])
+    let literal = run f.literal(data.asSlice())
+    run f.render(&mut invalid, t.jpeg3, &[invalidNames[i], run support.text(literal.asSlice())])
+    i = i + 1
+  }
+  let literal = run f.literal(valid.asSlice())
+  let end = run f.decimal(headerEnd)
+  run f.render(&mut invalid, t.jpeg4, &[run support.text(literal.asSlice()), run support.text(end.asSlice())])
+  run f.saveSource("jpeg_invalid_tests.silk", invalid.asSlice())
+}
+
+pub effect fn progressive() -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let names = ["progressiveL0Restart0", "progressiveL0Restart1", "progressiveRGB0Restart0", "progressiveRGB1Restart2", "progressiveRGB2Restart1"]
+  let samples = ["1x1", "1x1", "1x1,1x1,1x1", "2x1,1x1,1x1", "2x2,1x1,1x1"]
+  let restarts = ["0B", "1B", "0B", "2B", "1B"]
+  let mut source = run Bytes.copy(String.utf8Bytes(t.jpegprogressive0))
+  let mut valid = Bytes.make()
+  let mut index: usize = 0
+  while index < names.length {
+    let gray = index < 2
+    let mut pixels = Bytes.make()
+    let mut y: usize = 0
+    while y < 19 {
+      let mut x: usize = 0
+      while x < 23 {
+        run f.byte(&mut pixels, usize.toU8((x*11+y*17)%256))
+        if !gray {
+          run f.byte(&mut pixels, usize.toU8((x*7+y*3)%256))
+          run f.byte(&mut pixels, usize.toU8((x*13+y*19)%256))
+        }
+        x = x + 1
+      }
+      y = y + 1
+    }
+    let sequential = run f.encode(pixels.asSlice(), 23, 19, gray, "91", samples[index], false, restarts[index])
+    let encoded = run f.encode(pixels.asSlice(), 23, 19, gray, "91", samples[index], true, restarts[index])
+    run f.saveJpeg(names[index], encoded.asSlice())
+    let a = run f.literal(sequential.asSlice())
+    let b = run f.literal(encoded.asSlice())
+    run f.render(&mut source, t.jpegprogressive1, &[names[index], run support.text(a.asSlice()), run support.text(b.asSlice())])
+    if index == 1 { valid = run Bytes.copy(encoded.asSlice()) }
+    index = index + 1
+  }
+  // T.81 one-symbol DC/AC tables: zero difference and EOB each use one zero bit.
+  let ones = run f.repeated(1, 64)
+  let quantPayload = run f.join(&[b"\0", ones.asSlice()])
+  let quant = run f.segment(219, quantPayload.asSlice())
+  let counts = b"\x01\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+  let huffmanPayload = run f.join(&[b"\0", counts, b"\0\x10", counts, b"\0"])
+  let huffman = run f.segment(196, huffmanPayload.asSlice())
+  let frame = run f.segment(192, b"\x08\0\x07\0\x09\x03\x01\x22\0\x02\x11\0\x03\x11\0")
+  let mut separate = run f.join(&[b"\xff\xd8", quant.asSlice(), frame.asSlice(), huffman.asSlice()])
+  let mut component: u8 = 1
+  while component <= 3 {
+    let payload: [u8; 6] = [1, component, 0, 0, 63, 0]
+    let scan = run f.segment(218, &payload)
+    run Bytes.append(&mut separate, scan.asSlice())
+    run f.byte(&mut separate, if component == 1 { 15 } else { 63 })
+    component = component + 1
+  }
+  run Bytes.append(&mut separate, b"\xff\xd9")
+  let literal = run f.literal(separate.asSlice())
+  run f.render(&mut source, t.jpegprogressive2, &[run support.text(literal.asSlice())])
+  run f.saveSource("jpeg_progressive_scan_tests.silk", source.asSlice())
+  let first = run f.marker(valid.asSlice(), 218, 0)
+  let parameter = first + f.get16(valid.asSlice(), first + 2) + 1
+  let rst = run f.marker(valid.asSlice(), 208, 0)
+  let offsets = [parameter, parameter-1, rst+1]
+  let values: [u8; 3] = [16, 63, 210]
+  let invalidNames = ["refinementBeforeFirstScan", "dcScanWithAcBand", "wrongProgressiveRestart"]
+  let mut invalid = run Bytes.copy(String.utf8Bytes(t.jpegprogressive3))
+  index = 0
+  while index < 3 {
+    let data = run f.changed(valid.asSlice(), offsets[index], values[index])
+    let encoded = run f.literal(data.asSlice())
+    run f.render(&mut invalid, t.jpegprogressive4, &[invalidNames[index], run support.text(encoded.asSlice())])
+    index = index + 1
+  }
+  let encoded = run f.literal(valid.asSlice())
+  run f.render(&mut invalid, t.jpegprogressive5, &[run support.text(encoded.asSlice())])
+  run f.saveSource("jpeg_progressive_invalid_tests.silk", invalid.asSlice())
+}
+
+effect fn icc(index: u8, count: u8, data: &[u8]) -> Bytes ! OutOfMemoryError ? &mut Allocator {
+  let sequence: [u8; 2] = [index, count]
+  let mut payload = run Bytes.copy(b"ICC_PROFILE\0")
+  run Bytes.append(&mut payload, &sequence)
+  run Bytes.append(&mut payload, data)
+  return run f.segment(226, payload.asSlice())
+}
+effect fn metadataCase(source: &mut Bytes, template: string, name: string, valid: &[u8], sos: usize, parts: &[u8]) -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let image = run f.insert(valid, sos, parts)
+  let literal = run f.literal(image.asSlice())
+  run f.render(&mut source.*, template, &[name, run support.text(literal.asSlice())])
+}
+pub effect fn metadata() -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let valid = run support.read("modules/codec/tests/jpeg/orientedRgb.jpg")
+  let sos = run f.marker(valid.asSlice(), 218, 0)
+  let xmp = run f.segment(225, b"http://ns.adobe.com/xap/1.0/\0<xmp/>")
+  let withXmp = run f.insert(valid.asSlice(), sos, xmp.asSlice())
+  let mut source = run Bytes.copy(String.utf8Bytes(t.jpegmetadata0))
+  let encoded = run f.literal(withXmp.asSlice())
+  run f.render(&mut source, t.jpegmetadata1, &[run support.text(encoded.asSlice())])
+  run Bytes.append(&mut source, String.utf8Bytes(t.jpegmetadata2))
+  let profile = b"opaque-profile-bytes-for-assembly"
+  let part2 = run icc(2, 2, Slice.view<u8>(profile, 9, profile.length - 9))
+  let unrelated = run f.segment(226, b"unrelated")
+  let part1 = run icc(1, 2, Slice.view<u8>(profile, 0, 9))
+  let parts = run f.join(&[part2.asSlice(), unrelated.asSlice(), part1.asSlice()])
+  let image = run f.insert(valid.asSlice(), sos, parts.asSlice())
+  let encodedImage = run f.literal(image.asSlice())
+  let encodedProfile = run f.literal(profile)
+  run f.render(&mut source, t.jpegmetadata3, &[run support.text(encodedImage.asSlice()), run support.text(encodedProfile.asSlice())])
+  let missing = run icc(1, 2, b"one")
+  run metadataCase(&mut source, t.jpegmetadata4, "missingChunk", valid.asSlice(), sos, missing.asSlice())
+  let single = run icc(1, 1, b"one")
+  let duplicate = run f.join(&[single.asSlice(), single.asSlice()])
+  run metadataCase(&mut source, t.jpegmetadata4, "duplicateChunk", valid.asSlice(), sos, duplicate.asSlice())
+  let third = run icc(2, 3, b"two")
+  let conflicting = run f.join(&[missing.asSlice(), third.asSlice()])
+  run metadataCase(&mut source, t.jpegmetadata4, "conflictingCount", valid.asSlice(), sos, conflicting.asSlice())
+  let zero = run icc(0, 1, b"one")
+  run metadataCase(&mut source, t.jpegmetadata4, "zeroSequence", valid.asSlice(), sos, zero.asSlice())
+  let truncated = run f.segment(226, b"ICC_PROFILE\0")
+  run metadataCase(&mut source, t.jpegmetadata4, "truncatedIccHeader", valid.asSlice(), sos, truncated.asSlice())
+  let progressive = run support.read("modules/codec/tests/jpeg/progressiveGray.jpg")
+  let first = run f.marker(progressive.asSlice(), 218, 0)
+  let second = run f.marker(progressive.asSlice(), 218, first + 2)
+  let complete = run icc(1, 1, profile)
+  let trailing = run f.insert(progressive.asSlice(), second, complete.asSlice())
+  let encodedTrailing = run f.literal(trailing.asSlice())
+  let length = run f.decimal(profile.length)
+  run f.render(&mut source, t.jpegmetadata5, &[run support.text(encodedTrailing.asSlice()), run support.text(length.asSlice())])
+  run f.saveSource("jpeg_metadata_tests.silk", source.asSlice())
+}
+
+pub effect fn benchmark(output: string) -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let names = ["L-baseline.jpg", "L-progressive.jpg", "RGB-baseline.jpg", "RGB-progressive.jpg"]
+  let mut mode: usize = 0
+  while mode < 2 {
+    let channels: usize = if mode == 0 { 1 } else { 3 }
+    let mut pixels = run Bytes.makeWithCapacity(512 * 384 * channels)
+    let mut y: usize = 0
+    while y < 384 {
+      let mut x: usize = 0
+      while x < 512 {
+        run f.byte(&mut pixels, usize.toU8((x*3+y*5)%256))
+        if mode == 1 {
+          run f.byte(&mut pixels, usize.toU8((x*7+y*11)%256))
+          run f.byte(&mut pixels, usize.toU8((x*13+y*17)%256))
+        }
+        x = x + 1
+      }
+      y = y + 1
+    }
+    let mut progressive: usize = 0
+    while progressive < 2 {
+      let sampling = if mode == 0 { "1x1" } else { "2x2,1x1,1x1" }
+      let data = run f.encode(pixels.asSlice(), 512, 384, mode == 0, "90", sampling, progressive == 1, "0B")
+      let target = run f.join(&[String.utf8Bytes(output), b"/", String.utf8Bytes(names[mode * 2 + progressive])])
+      run support.save(run support.text(target.asSlice()), data.asSlice())
+      progressive = progressive + 1
+    }
+    mode = mode + 1
+  }
+}

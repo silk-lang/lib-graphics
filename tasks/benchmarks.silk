@@ -1,0 +1,209 @@
+import silk.cli.task { Task, TaskError }
+import silk.collections.bytes { Bytes }
+import silk.collections.list { List }
+import silk.core.effect { Effect }
+import silk.core.option { Option }
+import silk.core.result { Result }
+import silk.io.writer { Writer, WriterError }
+import silk.io.writer_native { StdoutWriter }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+import silk.system.child_process { ChildProcess, ProcessError }
+import silk.system.filesystem { DirectoryEntry, FileError, FileSystem, Path }
+import silk.system.host_input { HostInput, HostInputError }
+import silk.text.format { Format, ParseError }
+import silk.text.string { String, Split }
+import silk.num.f64
+import silk.num.u8
+import silk.num.usize
+import support
+import native_tools
+
+pub effect fn build(packagePath: string, release: bool, wasm: bool) -> Path
+  ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let mut manifest = run String.copy("modules/")
+  run String.append(&mut manifest, packagePath)
+  run String.append(&mut manifest, "/silk.toml")
+  let windowsGpu = support.OS == "windows" && !wasm && (String.startsWith(packagePath, "gpu_scene/") || String.startsWith(packagePath, "ui_renderer/"))
+  if windowsGpu {
+    run support.silk(&["check", "--manifest-path", String.view(&manifest)])
+    run native_tools.prepareWindows("", "", false)
+  }
+  if wasm { run support.silk(&["build", "--manifest-path", String.view(&manifest), "--target", "wasm32-unknown-unknown"]) }
+  else if release { run support.silk(&["build", "--manifest-path", String.view(&manifest), "--release"]) }
+  else { run support.silk(&["build", "--manifest-path", String.view(&manifest)]) }
+  let contents = run support.read(String.view(&manifest))
+  let mut lines = String.split(run support.text(Bytes.asSlice(&contents)), "\n")
+  let mut name = String.make()
+  while let Option<string>.Some { value: line } = Split.next(&mut lines) {
+    if String.startsWith(String.trim(line), "name = \"") {
+      let trimmed = String.trim(line)
+      let rest = String.slice(trimmed, 8, String.utf8Bytes(trimmed).length - 8)
+      if let Option<usize>.Some { value: end } = String.find(rest, "\"") {
+        name = run String.copy(String.slice(rest, 0, end))
+      }
+    }
+  }
+  if String.view(&name) == "" { run Task.abort("Missing executable package name") }
+  if !wasm && support.OS == "windows" { run String.append(&mut name, ".exe") }
+  let mut packageBuild = run String.copy("modules/")
+  run String.append(&mut packageBuild, packagePath)
+  run String.append(&mut packageBuild, "/build/llvm")
+  let bases = ["build/llvm", String.view(&packageBuild)]
+  let mut result = Option<Path>.None
+  let mut baseIndex: usize = 0
+  while baseIndex < bases.length {
+    let base = run support.path(bases[baseIndex])
+    if run FileSystem.exists(&base) {
+      let children = run FileSystem.listDirectory(&base)
+      let entries = List<DirectoryEntry>.asSlice(&children)
+      let mut at: usize = 0
+      while at < entries.length {
+        let target = &entries[at].path
+        let targetName = match Path.name(target) { Option<string>.Some { value } => value Option<string>.None => "" }
+        if entries[at].kind.code == 1 && wasm == (targetName == "wasm32-unknown-unknown") {
+          let mode = run Path.join(target, if release { "release" } else { "debug" })
+          let binary = run Path.join(&mode, String.view(&name))
+          if run FileSystem.exists(&binary) {
+            if let Option<Path>.Some { .. } = &result { run Task.abort("More than one build output matches; remove stale target outputs") }
+            result = Option<Path>.Some { value: move binary }
+          }
+        }
+        at = at + 1
+      }
+    }
+    baseIndex = baseIndex + 1
+  }
+  return match move result {
+    Option<Path>.Some { value } => {
+      if windowsGpu {
+        let directory = match move run Path.parent(&value) {
+          Option<Path>.Some { value: parent } => move parent
+          Option<Path>.None => run Task.abort("Build output has no parent directory")
+        }
+        run native_tools.prepareWindows("", run support.stringPath(&directory), false)
+      }
+      move value
+    }
+    Option<Path>.None => run Task.abort("Built executable not found")
+  }
+}
+
+fn space(byte: u8) -> bool { return byte == 32 || byte == 9 || byte == 13 || byte == 10 }
+
+pub effect fn metric(output: string, name: string) -> f64 ! TaskError | OutOfMemoryError ? &mut Allocator {
+  let mut lines = String.split(output, "\n")
+  let mut found = false
+  let mut value: f64 = 0.0
+  while let Option<string>.Some { value: raw } = Split.next(&mut lines) {
+    let line = String.trim(raw)
+    let bytes = String.utf8Bytes(line)
+    let mut at: usize = 0
+    while at < bytes.length && !space(bytes[at]) { at = at + 1 }
+    if String.slice(line, 0, at) == name {
+      let rest = String.trim(String.slice(line, at, bytes.length - at))
+      match Format.f64Value(rest) {
+        Result<f64, ParseError>.Success { value: parsed } => {
+          value = parsed
+          found = f64.isFinite(parsed)
+        }
+        Result<f64, ParseError>.Failure { .. } => { found = false }
+      }
+    }
+  }
+  if !found { run Task.abort(name) }
+  return value
+}
+
+struct Difference { mean: f64, worst: f64, share: f64 }
+
+effect fn difference(directory: &Path, scene: string, reference: string) -> Difference
+  ! TaskError | FileError | OutOfMemoryError ? &mut Allocator | &mut FileSystem {
+  let mut first = run String.copy("vector-")
+  run String.append(&mut first, scene)
+  run String.append(&mut first, ".rgba")
+  let mut second = run String.copy(reference)
+  run String.append(&mut second, "-")
+  run String.append(&mut second, scene)
+  run String.append(&mut second, ".rgba")
+  let firstPath = run Path.join(directory, String.view(&first))
+  let secondPath = run Path.join(directory, String.view(&second))
+  let firstBytes = run FileSystem.readFile(&firstPath)
+  let secondBytes = run FileSystem.readFile(&secondPath)
+  let a = Bytes.asSlice(&firstBytes)
+  let b = Bytes.asSlice(&secondBytes)
+  if a.length == 0 || a.length != b.length || a.length % 4 != 0 { run Task.abort("Incompatible RGBA images") }
+  let mut sum: f64 = 0.0
+  let mut worst: f64 = 0.0
+  let mut over: usize = 0
+  let mut pixel: usize = 0
+  while pixel < a.length {
+    let mut maximum: f64 = 0.0
+    let mut channel: usize = 0
+    while channel < 4 {
+      let x = u8.toF64(a[pixel + channel])
+      let y = u8.toF64(b[pixel + channel])
+      let delta = if x > y { x - y } else { y - x }
+      sum = sum + delta
+      if delta > maximum { maximum = delta }
+      channel = channel + 1
+    }
+    if maximum > worst { worst = maximum }
+    if maximum > 8.0 { over = over + 1 }
+    pixel = pixel + 4
+  }
+  return Difference { mean: sum / usize.toF64(a.length), worst: worst, share: usize.toF64(over) / usize.toF64(a.length / 4) }
+}
+
+pub effect fn vector() -> ()
+  ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  run compare("vector", "vector/bench", "tiny-skia", "vector-bench-tiny-skia", "20", &["fills", "strokes", "gradients", "polygon", "icons", "images"], false)
+}
+
+pub effect fn filters() -> ()
+  ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  run compare("filters", "vector/filter-bench", "resvg", "filter-bench-resvg", "15", &["blur4", "blur16", "saturate", "dilate3", "gamma", "sharpen", "turbulence", "lighting", "displace"], true)
+}
+
+effect fn compare(name: string, packagePath: string, reference: string, binaryName: string, iterations: string, scenes: &[string], baseline: bool) -> ()
+  ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let mut directory = run String.copy(".cache/bench/")
+  run String.append(&mut directory, name)
+  let out = run support.path(String.view(&directory))
+  run FileSystem.createDirectoriesRecursively(&out)
+  let binary = run build(packagePath, true, false)
+  let mut target = run String.copy(String.view(&directory))
+  run String.append(&mut target, "-rust")
+  let mut manifest = run String.copy("modules/")
+  run String.append(&mut manifest, packagePath)
+  run String.append(&mut manifest, "/")
+  run String.append(&mut manifest, reference)
+  run String.append(&mut manifest, "/Cargo.toml")
+  run support.exec("cargo", &["build", "--release", "--locked", "--quiet", "--manifest-path", String.view(&manifest), "--target-dir", String.view(&target)])
+  run String.append(&mut target, "/release/")
+  run String.append(&mut target, binaryName)
+  if support.OS == "windows" { run String.append(&mut target, ".exe") }
+  let referenceBinary = run support.path(String.view(&target))
+  let ours = run support.captured(run support.stringPath(&binary), &[], &out)
+  let theirs = run support.captured(run support.stringPath(&referenceBinary), &[iterations], &out)
+  let oursText = run support.text(ChildProcess.errorBytes(&ours))
+  let theirsText = run support.text(ChildProcess.errorBytes(&theirs))
+  let mut writer = StdoutWriter.make()
+  run Format.format("scene       vector ms  {reference} ms  ratio   mean |d|  max |d|  pixels > 8\n", &.{ reference: reference }) |> Effect.provideMut<Writer>(&mut writer)
+  let mut index: usize = 0
+  while index < scenes.length {
+    let scene = scenes[index]
+    let ourTime = run metric(oursText, scene)
+    let theirTime = run metric(theirsText, scene)
+    let delta = run difference(&out, scene, reference)
+    run Format.format("{scene:<12} {ours:.3}  {theirs:.3}  {ratio:.2}x  {mean:.3}  {worst}  {share:.2}%\n", &.{ scene: scene, ours: ourTime, theirs: theirTime, ratio: ourTime / theirTime, mean: delta.mean, worst: delta.worst, share: delta.share * 100.0 }) |> Effect.provideMut<Writer>(&mut writer)
+    index = index + 1
+  }
+  if baseline {
+    let time = run metric(theirsText, "baseline")
+    run Format.format("({reference} times exclude its {time:.3} ms baseline draw)\n", &.{ reference: reference, time: time }) |> Effect.provideMut<Writer>(&mut writer)
+  }
+}

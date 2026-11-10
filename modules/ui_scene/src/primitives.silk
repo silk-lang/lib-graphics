@@ -8,7 +8,6 @@
 import effects { LayerEffects }
 import silk.core.equal { Equal }
 import silk.core.ownership { Copy }
-import silk.core.option { Option }
 import silk.geometry.corners { Corners }
 import silk.geometry.insets { Insets }
 import silk.geometry.rect { Rect }

@@ -10,7 +10,6 @@
 //! Content masks clip by pixel area. Gradients are evaluated at pixel centers from a 256-entry
 //! ramp. Sprites sample their atlas tile bilinearly at pixel centers, clamped to the tile.
 import silk.collections.list { List }
-import silk.core.option { Option }
 import silk.core.ownership { Copy }
 import silk.geometry.corners { Corners }
 import silk.geometry.rect { Rect }
@@ -21,7 +20,7 @@ import silk.num.i32
 import silk.num.u32
 import silk.num.u8
 import silk.num.usize
-import atlas.atlas { Atlas, AtlasTile, Kind }
+import atlas.atlas { Atlas, AtlasTile }
 import vector.filter { BlurPlan, Region }
 import vector.filter as filtering
 import vector.flatten { TOLERANCE }
@@ -47,7 +46,7 @@ import primitives {
   Shadow,
   Underline,
 }
-import scene { Batch, PrimitiveKind, Scene }
+import scene { PrimitiveKind, Scene }
 import scroll { Placements, ScrollPosition }
 
 const PI: f64 = 3.141592653589793

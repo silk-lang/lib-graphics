@@ -22,22 +22,18 @@ import webgpu.descriptors {
 import webgpu_sys.generated_webgpu as flags
 import silk.collections.list { List }
 import silk.core.effect { Effect }
-import silk.core.ownership { Copy }
 import silk.io.writer_native { StderrWriter }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
 import silk.num.f32
 import silk.num.u32
 import silk.num.u8
 import silk.num.usize
-import atlas.atlas { AtlasError, AtlasOptions }
+import atlas.atlas { AtlasError }
 import ui_scene.color as color
-import ui_scene.cpu { AtlasPixels, CpuRenderer }
-import ui_scene.scene { Scene }
 import ui_renderer.atlas_textures { GpuAtlas }
 import ui_renderer.renderer { UiRenderer }
 import ui_renderer.text { TextSettings }
 import vector.geometry_error { GeometryError }
-import vector.pixmap { Pixmap }
 import gpu_scene.renderer { extent }
 import ui_fixtures.cases { COUNT, Fixture, Tolerance, fixture }
 import ui_fixtures.fixtures { WIDTH, HEIGHT }

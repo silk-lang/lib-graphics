@@ -1,0 +1,122 @@
+import silk.cli.task { Task, TaskError }
+import silk.collections.bytes { Bytes }
+import silk.core.effect { Effect }
+import silk.core.option { Option }
+import silk.core.result { Result }
+import silk.io.writer { Writer, WriterError }
+import silk.io.writer_native { StdoutWriter }
+import silk.json.scanner { JsonError }
+import silk.json.value { Json, Value }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+import silk.system.child_process { ChildProcess, ProcessError }
+import silk.system.filesystem { FileError, FileSystem }
+import silk.system.host_input { HostInput, HostInputError }
+import silk.text.format { Format }
+import silk.text.string { String }
+import benchmarks
+import generators
+import support
+
+effect fn packageCheck(packagePath: string, wasm: bool, tests: bool) -> ()
+  ! TaskError | FileError | HostInputError | OutOfMemoryError
+  ? &mut HostInput | &mut Allocator | &mut FileSystem {
+  let mut manifest = run String.copy("modules/")
+  run manifest.append(packagePath)
+  run manifest.append("/silk.toml")
+  if tests { run support.silk(&["test", "--manifest-path", String.view(&manifest), "--root", "src/tests.silk"]) }
+  else if wasm { run support.silk(&["check", "--manifest-path", String.view(&manifest), "--target", "wasm32-unknown-unknown"]) }
+  else { run support.silk(&["check", "--manifest-path", String.view(&manifest)]) }
+}
+
+pub effect fn nativeTest(packagePath: string) -> ()
+  ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let binary = run benchmarks.build(packagePath, false, false)
+  run support.exec(run support.stringPath(&binary), &[])
+}
+
+pub effect fn vector(skipNative: bool) -> ()
+  ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  run generators.embedShaders(true)
+  let packages = ["vector", "vector/bench", "vector/filter-bench", "gpu_scene", "gpu_scene/tests"]
+  let mut at: usize = 0
+  while at < packages.length {
+    run packageCheck(packages[at], false, false)
+    at = at + 1
+  }
+  run packageCheck("vector", false, true)
+  if !skipNative { run nativeTest("gpu_scene/tests") }
+}
+
+pub effect fn all(skipNative: bool) -> ()
+  ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  run generators.embedShaders(true)
+  let cpu = ["atlas", "codec", "editor", "geometry", "ui_scene", "vector"]
+  let mut at: usize = 0
+  while at < cpu.length {
+    run packageCheck(cpu[at], false, false)
+    run packageCheck(cpu[at], false, true)
+    run packageCheck(cpu[at], true, false)
+    at = at + 1
+  }
+  let goldens = run benchmarks.build("ui_scene/tests", false, false)
+  run support.exec(run support.stringPath(&goldens), &["modules/ui_scene/tests/goldens"])
+  let packages = ["vector/bench", "vector/filter-bench", "gpu_scene", "gpu_scene/tests", "ui_renderer", "ui_renderer/fixtures", "ui_renderer/tests", "ui_renderer/bench", "ui_renderer/browser"]
+  at = 0
+  while at < packages.length {
+    run packageCheck(packages[at], false, false)
+    at = at + 1
+  }
+  let wasm = ["gpu_scene", "ui_renderer", "ui_renderer/browser"]
+  at = 0
+  while at < wasm.length {
+    run packageCheck(wasm[at], true, false)
+    at = at + 1
+  }
+  run generators.browserExports(true)
+  if !skipNative {
+    run nativeTest("gpu_scene/tests")
+    run nativeTest("ui_renderer/tests")
+  }
+}
+
+pub effect fn rendererBenchmark() -> ()
+  ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+    let budgetBytes = run support.read("modules/ui_renderer/bench/budget.json")
+    let budget = match move run Effect.result(Json.parse(Bytes.asSlice(&budgetBytes))) {
+      Result<Value, JsonError | OutOfMemoryError>.Success { value } => move value
+      Result<Value, JsonError | OutOfMemoryError>.Failure { error } => match move error {
+        OutOfMemoryError allocation => { fail move allocation }
+        JsonError invalid => {
+          drop invalid
+          run Task.abort("Invalid renderer budget JSON")
+        }
+      }
+    }
+    let binary = run benchmarks.build("ui_renderer/bench", true, false)
+    let root = run Task.root()
+    let result = run support.captured(run support.stringPath(&binary), &[], &root)
+    run support.errors(ChildProcess.errorBytes(&result))
+    let output = run support.text(ChildProcess.errorBytes(&result))
+    let primitives = run benchmarks.metric(output, "primitives")
+    let mut writer = StdoutWriter.make()
+    run Format.format("dense scene: {primitives} primitives, 1280 x 800 BGRA8\n", &.{ primitives: primitives }) |> Effect.provideMut<Writer>(&mut writer)
+    let stages = ["build", "encode", "frame"]
+    let mut at: usize = 0
+    let mut exceeded = false
+    while at < stages.length {
+      let stage = stages[at]
+      let measured = run benchmarks.metric(output, stage)
+      let allowed = match Json.asF64(Json.field(&budget, stage)) {
+        Option<f64>.Some { value } => value
+        Option<f64>.None => run Task.abort("Missing renderer budget")
+      }
+      run Format.format("{stage}: {measured:.2} ms (budget {allowed:.2} ms)\n", &.{ stage: stage, measured: measured, allowed: allowed }) |> Effect.provideMut<Writer>(&mut writer)
+      if measured > allowed { exceeded = true }
+      at = at + 1
+    }
+    if exceeded { run Task.abort("Renderer timing exceeds committed budget") }
+}

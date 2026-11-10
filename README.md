@@ -20,7 +20,7 @@ This repository does not contain SVG, UI widgets, CSS, fonts, XML, Studio or gra
 The six CPU libraries have no native-package dependency. `ui_scene` is a graphics scene model,
 not a widget/UI framework. Test executables, renderer fixtures, browser wasm tests and benchmarks
 remain separate packages in the workspace. Rust benchmark comparators are development-only.
-Root `scripts/` is internal maintenance/verification tooling, never a package dependency.
+Root `tasks/` is internal Silk maintenance/verification tooling, never a package dependency.
 
 GPU manifests pin `silk-lang/lib-native` by an exact Git commit, including the `modules/gpu/webgpu`
 and `modules/gpu/webgpu/sys` package paths. Silk fetches that commit. Browser tools resolve the
@@ -33,25 +33,24 @@ packages from `nonstd` will fail, even when their version strings match.
 
 ## Toolchain and builds
 
-Use Silk **0.1.0-dev.63+657e3c900f65**, an LLVM **22** installation including `clang` and `wasm-ld`,
-and Git. Node **22+** runs the internal tools. `SILK_CLANG` can select an absolute LLVM 22 clang;
-`SILK` can select a compiler executable for the Node runners. The compiler's standard library is
-part of its release distribution. No Python is required for normal builds, tests or CI.
-
-To install the checksum-pinned Silk release with Node and the system `tar`:
+Use Silk **0.1.0-dev.64+8214c402307b**, LLVM **22** including `clang` and `wasm-ld`,
+and Git. `SILK_CLANG` selects an absolute LLVM 22 clang. The standard library ships
+with the compiler. Bootstrap Silk with its official installer before running tasks:
 
 ```sh
-export PATH="$(node scripts/install-silk.mjs):$PATH"
+curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.sh | SILK_RELEASE='v0.1.0-dev.64+8214c402307b' sh
+export PATH="$HOME/.silk/bin:$PATH"
 export SILK_CLANG=/absolute/path/to/llvm22/bin/clang
+silk task
 silk check --manifest-path modules/vector/silk.toml
 silk build --manifest-path modules/ui_scene/tests/silk.toml
 silk build --manifest-path modules/ui_renderer/tests/silk.toml
 silk build --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
 ```
 
-Silk owns dependency fetching, native archives, C compilation, linking and test execution. Build
-outputs are under `build/llvm/<target>/<debug|release>/`; native Windows executables have `.exe`.
-A CPU-only package can be checked or tested directly without fetching or preparing a GPU runtime:
+Silk owns dependency fetching, native archives, C compilation, linking and tests.
+Build outputs are under `build/llvm/<target>/<debug|release>/`; Windows native
+executables have `.exe`. CPU-only work needs no GPU runtime:
 
 ```sh
 silk test --manifest-path modules/vector/silk.toml --root src/tests.silk
@@ -61,80 +60,105 @@ silk check --manifest-path modules/ui_scene/silk.toml --target wasm32-unknown-un
 
 ### Platform dependencies
 
-- **macOS:** Xcode command-line tools/SDK, LLVM 22, and Metal-capable hardware for native GPU tests.
-  Export `SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"` before native builds.
-- **Linux:** LLVM 22, the C/C++ system toolchain and development headers, and a Vulkan driver.
-  Mesa lavapipe is suitable for software GPU comparisons. Browser tests also require an installed
-  Chromium, `xvfb-run` and `xauth`. The CI workflow invokes the pinned lib-native
-  `scripts/setup-ci.mjs --linux-gpu` or `--browser` to prepare its reviewed dependencies.
-- **Windows x64:** an x64 Visual Studio developer shell with the Windows SDK, LLVM 22 and
-  PowerShell. Fetch lib-native through Silk first, then prepare its native bridge and archive
-  overrides before a direct native GPU build:
+Task subprocesses retain a ten-minute deadline. Install native GNU coreutils
+`timeout` on Linux, `gtimeout` on macOS, or busybox-w32 `busybox.exe` on Windows.
+These are native executables, not script interpreters. JPEG diagnostics use
+shorter 300-second build/Callgrind and 120-second sample deadlines.
+
+- **macOS:** Xcode command-line tools/SDK, LLVM 22 and Metal-capable hardware for
+  native GPU tests. Export `SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"`.
+- **Linux:** LLVM 22, the C/C++ system toolchain and development headers, and a
+  Vulkan driver (Mesa lavapipe works). Browser tests use installed Chromium,
+  `Xvfb`, `xauth` and `openssl`; Silk starts and reaps its private Xvfb directly.
+- **Windows x64:** an x64 Visual Studio developer shell with Windows SDK, LLVM 22
+  and PowerShell. Install Silk with the official installer:
 
   ```powershell
-  $env:PATH = "$(node scripts/install-silk.mjs);$env:PATH"
+  $env:SILK_RELEASE = 'v0.1.0-dev.64+8214c402307b'
+  irm https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.ps1 | iex
   silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
-  node scripts/prepare-windows.mjs
+  silk task prepare-windows
   silk build --manifest-path modules/ui_renderer/tests/silk.toml
-  node scripts/prepare-windows.mjs -RuntimeDirectory build/llvm/x86_64-pc-windows-msvc/debug
+  silk task prepare-windows --runtime-directory build/llvm/x86_64-pc-windows-msvc/debug
   ```
 
-  This invokes PowerShell from the exact pinned lib-native checkout, not Python or a sibling tree.
-  Native GPU Node runners perform preparation and runtime-DLL staging automatically. Direct Silk
-  builds need the explicit preparation/staging above. The DLLs include Dawn, DXC and GLFW.
+`silk task setup-ci --linux-gpu` and `silk task setup-ci --browser` delegate to
+the exact manifest-pinned lib-native task program. Native GPU tasks automatically
+prepare Windows bridges and stage runtime DLLs beside the executable. No sibling
+checkout, moving branch, interpreter wrapper or legacy runner is selected.
+
+Windows managed Chromium remains unsupported pending
+[Silk issue #3034](https://github.com/silk-lang/silk/issues/3034): the managed
+subprocess/extra-pipe API is unavailable on Windows. `silk task test-browser`
+reports that blocker there; no parallel JavaScript automation is retained.
 
 ## Verification
 
 Run from this repository root:
 
 ```sh
-node scripts/check.mjs                    # six CPU test roots, goldens, all packages, wasm, native GPU comparisons
-node scripts/check.mjs --skip-native      # same checks without running native GPU comparisons
-node scripts/check-vector.mjs             # focused vector tests and CPU/GPU scene comparison
-node scripts/test-scene.mjs               # gpu_scene exact-image comparison
-node scripts/test-ui-renderer.mjs         # UI renderer fixtures against the CPU reference
-node scripts/test-browser.mjs             # build wasm and compare fixtures in installed Chromium
+silk task check                        # CPU roots, goldens, packages, wasm, native GPU
+silk task check --skip-native          # no native GPU execution; all package checks remain
+silk task check-vector                 # vector tests and CPU/GPU scene comparison
+silk task test-scene                   # gpu_scene exact-image comparison
+silk task test-ui-renderer             # UI fixtures against CPU references
+silk task test-browser                 # eighteen Chromium WebGPU fixtures (macOS/Linux)
 ```
 
-`--skip-native` omits GPU execution, not dependency resolution or GPU package checks. CPU-only
-users should use the direct per-package Silk commands above. The CPU golden test consumes the
-committed `modules/ui_scene/tests/goldens` PNGs; codec vectors and JPEG fixtures are included.
-The browser smoke uses the actual lib-native `browser/runner.ts` and host payload with
-`navigator.gpu`. `PLAYWRIGHT_MODULE` may point to an already installed `playwright` or
-`playwright-core` module; `PLAYWRIGHT_CHROMIUM_EXECUTABLE` selects the installed browser. The
-smoke runner never downloads a browser. Linux runs Chromium under Xvfb for WebGPU presentation.
+`--skip-native` omits GPU execution, not dependency resolution or GPU package
+checks. CPU goldens consume committed `modules/ui_scene/tests/goldens` PNGs.
+Browser tasks use the manifest-pinned lib-native `browser/runner.ts`, host and
+schema as actual browser runtime modules. Silk manages Chromium through its
+DevTools pipe and compares CPU/GPU pixels itself. It needs no Playwright and never
+downloads a browser. `CHROMIUM_EXECUTABLE` selects an installed browser; Linux
+uses a private X display.
 
-CI runs the native and browser gates on pull requests. Scheduled/manual runs additionally execute:
+Scheduled/manual CI additionally runs:
 
 ```sh
-node scripts/bench-vector.mjs              # release vector vs locked tiny-skia (Cargo required)
-node scripts/bench-filters.mjs             # release filters vs locked resvg (Cargo required)
-node scripts/bench-ui-renderer.mjs         # release dense scene vs committed timing budget
+silk task bench vector                 # release vector vs locked tiny-skia; Cargo
+silk task bench filters                # release filters vs locked resvg; Cargo
+silk task bench ui-renderer            # dense scene vs committed budget
 ```
 
-Outputs for the CPU comparisons go to `.cache/bench`. Renderer timing budgets describe the
-recorded software-renderer workload, not a promise for arbitrary machines. See each package's
-README and benchmark `WORKLOADS.md` for comparison tolerances and historical measurements.
+CPU comparisons write `.cache/bench`. Timing budgets describe the recorded
+software-renderer workload, not arbitrary machines. See package READMEs and
+benchmark `WORKLOADS.md` for tolerances and historical measurements.
 
 ## Generated sources and optional diagnostics
 
-Edit graphics WGSL beside its owning package and run `node scripts/embed-shaders.mjs`.
-`node scripts/embed-shaders.mjs --check` detects drift. Both the canonical WGSL and generated
-`src/generated_shaders.silk` modules remain here; lib-native does not generate graphics shaders.
-Generated banners identify the owning package under `modules/`; shader payloads are unchanged.
+```sh
+silk task embed-shaders
+silk task embed-shaders --check
+silk task generate-browser-exports
+silk task generate-browser-exports --check
+```
 
-The browser executable must own its callback and allocator exports: dependency modules do not
-export wasm symbols. After updating the native manifest pin and fetching it with Silk, run
-`node scripts/generate-browser-exports.mjs` to copy lib-native's canonical
-`modules/gpu/webgpu/browser/generated_webgpu_exports.silk` template into this root wasm application.
-Use `--check` to compare without writing. No Python generator is imported across repositories.
+Canonical WGSL and generated `src/generated_shaders.silk` stay with their graphics
+packages. The shader generator preserves the byte-literal format and identifies
+the generating task in its banner. Browser roots own their callback/allocator wasm exports;
+after fetching a new native pin, regenerate from its canonical
+`modules/gpu/webgpu/browser/generated_webgpu_exports.silk` template.
 
-Optional Python fixture generators remain under `modules/codec/tests`; Pillow is needed for
-JPEG encoding. They are maintainer-only tools, not build dependencies. The self-contained
-`scripts/diagnostics/bench-jpeg.py` records JPEG decode timings (and optional Linux Callgrind
-counts) from explicit input images, invoking Silk directly. Run it with `--help` for options;
-it is not part of CI. ICC test vectors remain embedded in Silk, with their original generator's
-source-snapshot provenance recorded in the test module.
+Fixture generation is also Silk, with native `gzip` for independent PNG
+compression and `cjpeg` (libjpeg-turbo) for independent JPEG encoding:
+
+```sh
+silk task fixtures png
+silk task fixtures jpeg
+silk task fixtures jpeg-progressive
+silk task fixtures jpeg-metadata
+silk task fixtures jpeg-benchmark .cache/jpeg-inputs
+silk task bench jpeg .cache/jpeg-inputs/RGB-baseline.jpg --output .cache/jpeg-report.json
+```
+
+Regeneration is intentional, not part of normal CI: native encoder versions may
+change compressed bytes. JPEG diagnostics keep sample/iteration/warmup validation,
+output checksum checks, SHA-256 provenance, median decode timings and optional
+Linux `--callgrind` whole-process instruction counts. They build the codec's
+`jpeg-bench` executable profile without copying its sources. Callgrind additionally
+requires Valgrind; the native deadline utilities are listed under platform dependencies.
+ICC vectors retain their original source-snapshot provenance.
 
 ## Provenance
 
@@ -143,7 +167,7 @@ Extracted from [`silk-lang/nonstd` commit
 All original `graphics/*` packages and their fixtures, tests, benchmarks and browser package are retained under `modules/`.
 Implementation and package identities are preserved; extraction changes dependency locations,
 internal tooling and documentation. Vector/scene gates formerly under `svg/scripts` now live in
-this repository's root `scripts/`. No source library from SVG, UI or native was copied here.
+this repository's root `tasks/`.
 The native dependency revision in the manifests, rather than this historical source snapshot,
 selects the current runtime payload and native ABI.
 

@@ -120,11 +120,11 @@ effect fn truncatedImages() -> ()
   while length < data.length {
     let result = run Effect.result(jpeg.decode(Slice.view<u8>(data, 0, length)))
     let rejected = match &result {
-      Result<Image, JpegError | ImageError | OutOfMemoryError>.Success { value } => false
+      Result<Image, JpegError | ImageError | OutOfMemoryError>.Success { value: _ } => false
       Result<Image, JpegError | ImageError | OutOfMemoryError>.Failure { error } => match &error {
-        JpegError problem => true
-        ImageError problem => true
-        OutOfMemoryError problem => {
+        JpegError _ => true
+        ImageError _ => true
+        OutOfMemoryError _ => {
           fail OutOfMemoryError {}
         }
       }

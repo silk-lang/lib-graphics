@@ -13,7 +13,6 @@ import silk.geometry.insets { Insets }
 import silk.geometry.vector { Vector2 }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
 import silk.num.f32
-import silk.num.f64
 import silk.num.u32
 import silk.num.usize
 import ui_scene.effects { LayerEffects }

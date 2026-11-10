@@ -36,7 +36,7 @@ test effect fn rejectsReservedAndOversubscribedCodes() -> ()
   )
   run Testing.expect(
     match &reserved {
-      Result<Table, JpegError>.Failure { error } => true
+      Result<Table, JpegError>.Failure { error: _ } => true
       _ => false
     },
     "all-ones code reserved",
@@ -49,7 +49,7 @@ test effect fn rejectsReservedAndOversubscribedCodes() -> ()
   )
   run Testing.expect(
     match &over {
-      Result<Table, JpegError>.Failure { error } => true
+      Result<Table, JpegError>.Failure { error: _ } => true
       _ => false
     },
     "oversubscribed tree rejected",
@@ -62,7 +62,7 @@ test effect fn rejectsMarkersAndWrongRestart() -> ()
   let read = run Effect.result(marker.bits(1))
   run Testing.expect(
     match &read {
-      Result<u32, JpegError>.Failure { error } => true
+      Result<u32, JpegError>.Failure { error: _ } => true
       _ => false
     },
     "EOI is not entropy data",
@@ -71,7 +71,7 @@ test effect fn rejectsMarkersAndWrongRestart() -> ()
   let restart = run Effect.result(wrong.restart(0))
   run Testing.expect(
     match &restart {
-      Result<(), JpegError>.Failure { error } => true
+      Result<(), JpegError>.Failure { error: _ } => true
       _ => false
     },
     "restart sequence checked",

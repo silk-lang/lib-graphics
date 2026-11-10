@@ -267,8 +267,6 @@ impl PathCache {
       }
 
       // Cache: rasterize at the snapped fractional offset, unclipped.
-      let ix = f64.floor(transform.dx)
-      let iy = f64.floor(transform.dy)
       let sx = u32.toF64(key.subpixel / 4) / 4.0
       let sy = u32.toF64(key.subpixel % 4) / 4.0
       let local = Affine.new(transform.xx, transform.yx, transform.xy, transform.yy, sx, sy)

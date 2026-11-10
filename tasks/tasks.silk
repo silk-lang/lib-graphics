@@ -1,0 +1,117 @@
+import silk.cli.command { Command, CommandLine, Opt }
+import silk.cli.task { Task, TaskError, TaskSet }
+import silk.collections.list { List }
+import silk.io.writer { WriterError }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+import silk.system.child_process { ChildProcess, ProcessError }
+import silk.system.filesystem { FileError, FileSystem }
+import silk.system.host_input { HostInput, HostInputError }
+import silk.text.string { String }
+import benchmarks
+import checks
+import codec_fixtures
+import generators
+import jpeg_diagnostic
+import support
+import native_tools
+static if Intrinsic.targetOperatingSystem() != "windows" { import browser_tests }
+
+union Tasks {
+  Check { pub skipNative: bool },
+  CheckVector { pub skipNative: bool },
+  TestScene,
+  TestUiRenderer,
+  TestBrowser,
+  Bench { pub benchmark: BenchmarkTasks },
+  Fixtures { pub fixture: FixtureTasks },
+  EmbedShaders { pub check: bool },
+  GenerateBrowserExports { pub check: bool },
+  NativeRoot,
+  SetupCi { pub browser: bool, pub linuxGpu: bool },
+  PrepareWindows { pub clang: String, pub runtimeDirectory: String, pub json: bool },
+}
+
+union BenchmarkTasks {
+  Vector,
+  Filters,
+  UiRenderer,
+  Jpeg { pub inputs: List<String>, pub output: String, pub samples: u32, pub iterations: u32, pub warmup: u32, pub callgrind: bool },
+}
+
+union FixtureTasks {
+  Png,
+  Jpeg,
+  JpegProgressive,
+  JpegMetadata,
+  JpegBenchmark { pub directory: String },
+}
+
+impl CommandLine for BenchmarkTasks {
+  static fn command() -> Command<BenchmarkTasks> {
+    return Command<BenchmarkTasks>.make("bench", "Rendering and JPEG decode benchmarks")
+      |> Command.arg("inputs", Opt.about("JPEG input files") |> Opt.required)
+      |> Command.option("output", Opt.about("JSON report path") |> Opt.required)
+      |> Command.option("samples", Opt.about("Native samples per input") |> Opt.default("3"))
+      |> Command.option("iterations", Opt.about("Decodes per sample") |> Opt.default("5"))
+      |> Command.option("warmup", Opt.about("Unmeasured decodes per sample") |> Opt.default("1"))
+  }
+}
+
+impl CommandLine for FixtureTasks {
+  static fn command() -> Command<FixtureTasks> {
+    return Command<FixtureTasks>.make("fixtures", "Independent codec fixture generation")
+      |> Command.arg("directory", Opt.about("Output directory") |> Opt.required)
+  }
+}
+
+impl CommandLine for Tasks {
+  static fn command() -> Command<Tasks> {
+    return Command<Tasks>.make("graphics", "Graphics checks, benchmarks and committed generators")
+      |> Command.option("clang", Opt.about("LLVM clang executable; defaults to SILK_CLANG or PATH") |> Opt.default(""))
+      |> Command.option("runtimeDirectory", Opt.about("Executable directory for runtime DLLs") |> Opt.default(""))
+      |> Command.subcommand("benchmark")
+      |> Command.subcommand("fixture")
+  }
+}
+
+impl TaskSet for Tasks {
+  effect fn perform(self: Tasks) -> ()
+    ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+    ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+    match move self {
+      Tasks.Check { skipNative } => run checks.all(skipNative)
+      Tasks.CheckVector { skipNative } => run checks.vector(skipNative)
+      Tasks.TestScene => run checks.nativeTest("gpu_scene/tests")
+      Tasks.TestUiRenderer => run checks.nativeTest("ui_renderer/tests")
+      Tasks.TestBrowser => {
+        static if Intrinsic.targetOperatingSystem() == "windows" {
+          run Task.abort("Windows managed Chromium requires silk-lang/silk#3034: the managed subprocess/extra-pipe API is unavailable")
+        } else { run browser_tests.perform() }
+      }
+      Tasks.Bench { benchmark } => match move benchmark {
+        BenchmarkTasks.Vector => run benchmarks.vector()
+        BenchmarkTasks.Filters => run benchmarks.filters()
+        BenchmarkTasks.UiRenderer => run checks.rendererBenchmark()
+        BenchmarkTasks.Jpeg { inputs, output, samples, iterations, warmup, callgrind } => run jpeg_diagnostic.perform(inputs.asSlice(), samples, iterations, warmup, callgrind, String.view(&output))
+      }
+      Tasks.Fixtures { fixture } => match move fixture {
+        FixtureTasks.Png => run codec_fixtures.png()
+        FixtureTasks.Jpeg => run codec_fixtures.jpeg()
+        FixtureTasks.JpegProgressive => run codec_fixtures.progressive()
+        FixtureTasks.JpegMetadata => run codec_fixtures.metadata()
+        FixtureTasks.JpegBenchmark { directory } => run codec_fixtures.benchmark(String.view(&directory))
+      }
+      Tasks.EmbedShaders { check } => run generators.embedShaders(check)
+      Tasks.GenerateBrowserExports { check } => run generators.browserExports(check)
+      Tasks.NativeRoot => {
+        let root = run generators.nativeRoot()
+        run support.output(String.utf8Bytes(run support.stringPath(&root)))
+        run support.output(b"\n")
+      }
+      Tasks.SetupCi { browser, linuxGpu } => run native_tools.setup(browser, linuxGpu)
+      Tasks.PrepareWindows { clang, runtimeDirectory, json } => run native_tools.prepareWindows(String.view(&clang), String.view(&runtimeDirectory), json)
+    }
+  }
+}
+
+pub effect fn main() -> i32 ? &mut HostInput { return run Task.main<Tasks>() }

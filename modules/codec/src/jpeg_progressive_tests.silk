@@ -74,7 +74,7 @@ test effect fn rejectsInvalidBandsAndRuns() -> ()
   )
   run Testing.expect(
     match &overrun {
-      Result<(), JpegError>.Failure { error } => true
+      Result<(), JpegError>.Failure { error: _ } => true
       _ => false
     },
     "ZRL cannot cross spectral band",
@@ -84,7 +84,7 @@ test effect fn rejectsInvalidBandsAndRuns() -> ()
   )
   run Testing.expect(
     match &invalidBand {
-      Result<(), JpegError>.Failure { error } => true
+      Result<(), JpegError>.Failure { error: _ } => true
       _ => false
     },
     "AC band cannot include DC",
@@ -92,7 +92,7 @@ test effect fn rejectsInvalidBandsAndRuns() -> ()
   let invalidShift = run Effect.result(jpeg_progressive.dcRefine(&mut reader, 14, &mut block))
   run Testing.expect(
     match &invalidShift {
-      Result<(), JpegError>.Failure { error } => true
+      Result<(), JpegError>.Failure { error: _ } => true
       _ => false
     },
     "approximation bit is bounded",

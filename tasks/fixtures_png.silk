@@ -1,0 +1,448 @@
+import support
+import fixtures_support as f
+import fixtures_templates as t
+import silk.cli.task { TaskError }
+import silk.collections.bytes { Bytes }
+import silk.collections.slice { Slice }
+import silk.io.writer { WriterError }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+import silk.system.child_process { ChildProcess, ProcessError }
+import silk.system.filesystem { FileSystem, FileError }
+import silk.system.host_input { HostInput, HostInputError }
+import silk.text.string { String }
+import silk.num.u8
+import silk.num.u32
+import silk.num.usize
+import silk.num.i32
+
+const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n"
+
+// PNG framing and CRC are deliberately independent of the codec implementation.
+effect fn chunk(kind: &[u8], data: &[u8]) -> Bytes ! OutOfMemoryError ? &mut Allocator {
+  let mut out = run Bytes.makeWithCapacity(data.length + 12)
+  run f.be(&mut out, data.length, 4)
+  run Bytes.append(&mut out, kind)
+  run Bytes.append(&mut out, data)
+  let mut crc: u32 = 4294967295
+  let mut i: usize = 4
+  while i < out.asSlice().length {
+    crc = crc ^ u8.toU32(out.asSlice()[i])
+    let mut bit: usize = 0
+    while bit < 8 {
+      crc = if (crc & 1) == 1 { u32.shiftRight(crc, 1) ^ 3988292384 } else { u32.shiftRight(crc, 1) }
+      bit = bit + 1
+    }
+    i = i + 1
+  }
+  run f.be(&mut out, u32.toUsize(crc ^ 4294967295), 4)
+  return move out
+}
+effect fn header(width: usize, height: usize, depth: u8, color: u8, interlace: u8) -> Bytes ! OutOfMemoryError ? &mut Allocator {
+  let mut data = Bytes.make()
+  run f.be(&mut data, width, 4)
+  run f.be(&mut data, height, 4)
+  let fields: [u8; 5] = [depth, color, 0, 0, interlace]
+  run Bytes.append(&mut data, &fields)
+  return run chunk(b"IHDR", data.asSlice())
+}
+effect fn frame(width: usize, height: usize, depth: u8, color: u8, raw: &[u8], interlace: u8, extras: &[u8]) -> Bytes ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let ihdr = run header(width, height, depth, color, interlace)
+  let compressed = run f.zlib(raw)
+  let idat = run chunk(b"IDAT", compressed.asSlice())
+  let end = run chunk(b"IEND", b"")
+  return run f.join(&[SIGNATURE, ihdr.asSlice(), extras, idat.asSlice(), end.asSlice()])
+}
+effect fn small(depth: u8, color: u8, row: &[u8], extras: &[u8]) -> Bytes ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let raw = run f.join(&[b"\0", row])
+  return run frame(2, 1, depth, color, raw.asSlice(), 0, extras)
+}
+effect fn sample(source: &mut Bytes, name: string, data: &[u8], expected: &[u8], width: usize, height: usize) -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let encoded = run f.literal(data)
+  let pixels = run f.literal(expected)
+  let w = run f.decimal(width)
+  let h = run f.decimal(height)
+  run f.render(&mut source.*, t.png1, &[name, run support.text(encoded.asSlice()), run support.text(pixels.asSlice()), run support.text(w.asSlice()), run support.text(h.asSlice())])
+}
+effect fn invalid(source: &mut Bytes, name: string, data: &[u8]) -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let encoded = run f.literal(data)
+  run f.render(&mut source.*, t.png3, &[name, run support.text(encoded.asSlice())])
+}
+effect fn named(prefix: string, value: usize) -> Bytes ! OutOfMemoryError ? &mut Allocator {
+  let mut out = run Bytes.copy(String.utf8Bytes(prefix))
+  run f.number(&mut out, value)
+  return move out
+}
+fn absolute(value: i32) -> i32 { return if value < 0 { 0 - value } else { value } }
+fn paeth(a: usize, b: usize, c: usize) -> usize {
+  let p = usize.toI32(a) + usize.toI32(b) - usize.toI32(c)
+  let pa = absolute(p - usize.toI32(a))
+  let pb = absolute(p - usize.toI32(b))
+  let pc = absolute(p - usize.toI32(c))
+  if pa <= pb && pa <= pc { return a }
+  return if pb <= pc { b } else { c }
+}
+effect fn control(sequence: usize, width: usize, height: usize, x: usize, y: usize, dispose: u8, blend: u8) -> Bytes ! OutOfMemoryError ? &mut Allocator {
+  let mut data = Bytes.make()
+  run f.be(&mut data, sequence, 4)
+  run f.be(&mut data, width, 4)
+  run f.be(&mut data, height, 4)
+  run f.be(&mut data, x, 4)
+  run f.be(&mut data, y, 4)
+  run Bytes.append(&mut data, b"\0\x01\0\x0a")
+  run f.byte(&mut data, dispose)
+  run f.byte(&mut data, blend)
+  return run chunk(b"fcTL", data.asSlice())
+}
+effect fn frameData(sequence: usize, compressed: &[u8]) -> Bytes ! OutOfMemoryError ? &mut Allocator {
+  let mut data = Bytes.make()
+  run f.be(&mut data, sequence, 4)
+  run Bytes.append(&mut data, compressed)
+  return run chunk(b"fdAT", data.asSlice())
+}
+struct Animation {
+  header: Bytes,
+  start: Bytes,
+  defaultImage: Bytes,
+  end: Bytes,
+  firstStream: Bytes,
+}
+effect fn animation() -> Animation ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let ihdr = run header(2, 1, 8, 6, 0)
+  let actl = run chunk(b"acTL", b"\0\0\0\x02\0\0\0\0")
+  let start = run f.join(&[SIGNATURE, ihdr.asSlice(), actl.asSlice()])
+  let raw = run f.zlib(b"\0\xff\0\0\xff\xff\0\0\xff")
+  return Animation {
+    header: move ihdr, start: move start,
+    defaultImage: run chunk(b"IDAT", raw.asSlice()),
+    end: run chunk(b"IEND", b""),
+    firstStream: run f.zlib(b"\0\0\xff\0\x80"),
+  }
+}
+
+pub effect fn generate() -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let mut source = run Bytes.copy(String.utf8Bytes(t.png0))
+  let depths: [u8; 5] = [1, 2, 4, 8, 16]
+  let mut i: usize = 0
+  while i < depths.length {
+    let depth = depths[i]
+    let mut row = Bytes.make()
+    if depth < 8 {
+      run f.byte(&mut row, usize.toU8(usize.shiftLeft(usize.shiftLeft(1, u8.toUsize(depth)) - 1, 8 - u8.toUsize(depth)*2)))
+    } else if depth == 8 { run Bytes.append(&mut row, b"\0\xff") }
+    else { run Bytes.append(&mut row, b"\0\0\xff\xff") }
+    let data = run small(depth, 0, row.asSlice(), b"")
+    let name = run named("gray", u8.toUsize(depth))
+    run sample(&mut source, run support.text(name.asSlice()), data.asSlice(), b"\0\0\0\xff\xff\xff\xff\xff", 2, 1)
+    i = i + 1
+  }
+  let colors: [u8; 3] = [2, 4, 6]
+  let prefixes = ["rgb", "grayAlpha", "rgba"]
+  let rows: [&[u8]; 3] = [b"\xff\0\0\0\xff\0", b"\xff\x80\xff\0", b"\xff\0\0\x80\0\xff\0\xff"]
+  let expectedRows: [&[u8]; 3] = [b"\xff\0\0\xff\0\xff\0\xff", b"\x80\x80\x80\x80\0\0\0\0", b"\x80\0\0\x80\0\xff\0\xff"]
+  let mut depth: u8 = 8
+  while depth <= 16 {
+    i = 0
+    while i < 3 {
+      let mut row = Bytes.make()
+      let mut index: usize = 0
+      while index < rows[i].length {
+        run f.byte(&mut row, rows[i][index])
+        if depth == 16 { run f.byte(&mut row, rows[i][index]) }
+        index = index + 1
+      }
+      let data = run small(depth, colors[i], row.asSlice(), b"")
+      let name = run named(prefixes[i], u8.toUsize(depth))
+      run sample(&mut source, run support.text(name.asSlice()), data.asSlice(), expectedRows[i], 2, 1)
+      i = i + 1
+    }
+    depth = depth + 8
+  }
+  let plte = run chunk(b"PLTE", b"\xff\0\0\0\xff\0")
+  let trns = run chunk(b"tRNS", b"\x80\xff")
+  let palette = run f.join(&[plte.asSlice(), trns.asSlice()])
+  i = 0
+  while i < 4 {
+    let d = depths[i]
+    let mut row = Bytes.make()
+    if d < 8 { run f.byte(&mut row, usize.toU8(usize.shiftLeft(1, 8 - u8.toUsize(d)*2))) }
+    else { run Bytes.append(&mut row, b"\0\x01") }
+    let data = run small(d, 3, row.asSlice(), palette.asSlice())
+    let name = run named("palette", u8.toUsize(d))
+    run sample(&mut source, run support.text(name.asSlice()), data.asSlice(), b"\x80\0\0\x80\0\xff\0\xff", 2, 1)
+    i = i + 1
+  }
+  run filters(&mut source)
+  run adam7(&mut source)
+  let grayTrns = run chunk(b"tRNS", b"\x01\0")
+  let transparentGray = run small(8, 0, b"\0\xff", grayTrns.asSlice())
+  run sample(&mut source, "grayTransparencyHighBits", transparentGray.asSlice(), b"\0\0\0\0\xff\xff\xff\xff", 2, 1)
+  let rgbTrns = run chunk(b"tRNS", b"\x01\0\0\0\0\0")
+  let transparentRgb = run small(8, 2, b"\0\0\0\0\0\0", rgbTrns.asSlice())
+  run sample(&mut source, "rgbTransparencyHighBits", transparentRgb.asSlice(), b"\0\0\0\0\0\0\0\0", 2, 1)
+  let apng = run animation()
+  run animated(&mut source, &apng)
+  run f.saveSource("png_decode_tests.silk", source.asSlice())
+  run malformed(&apng)
+  run metadata()
+}
+
+effect fn filters(source: &mut Bytes) -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let mut pixels = Bytes.make()
+  let mut expected = Bytes.make()
+  let mut i: usize = 0
+  while i < 36 { run f.byte(&mut pixels, usize.toU8((i*71+17)%256)) i = i + 1 }
+  i = 0
+  while i < 36 {
+    let a = u8.toUsize(pixels.asSlice()[i+3])
+    let mut c: usize = 0
+    while c < 3 { run f.byte(&mut expected, usize.toU8((u8.toUsize(pixels.asSlice()[i+c])*a+127)/255)) c = c + 1 }
+    run f.byte(&mut expected, usize.toU8(a))
+    i = i + 4
+  }
+  let mut kind: usize = 0
+  while kind < 5 {
+    let mut raw = Bytes.make()
+    let mut y: usize = 0
+    while y < 3 {
+      run f.byte(&mut raw, usize.toU8(kind))
+      let mut x: usize = 0
+      while x < 12 {
+        let a: usize = if x >= 4 { u8.toUsize(pixels.asSlice()[y*12+x-4]) } else { 0 }
+        let b: usize = if y > 0 { u8.toUsize(pixels.asSlice()[(y-1)*12+x]) } else { 0 }
+        let c: usize = if y > 0 && x >= 4 { u8.toUsize(pixels.asSlice()[(y-1)*12+x-4]) } else { 0 }
+        let predictions = [usize.ZERO, a, b, (a+b)/2, paeth(a,b,c)]
+        run f.byte(&mut raw, usize.toU8((u8.toUsize(pixels.asSlice()[y*12+x])+256-predictions[kind])%256))
+        x = x + 1
+      }
+      y = y + 1
+    }
+    let name = run named("filter", kind)
+    let data = run frame(3, 3, 8, 6, raw.asSlice(), 0, b"")
+    run sample(&mut source.*, run support.text(name.asSlice()), data.asSlice(), expected.asSlice(), 3, 3)
+    kind = kind + 1
+  }
+}
+fn grayValue(x: usize, y: usize, depth: u8) -> usize {
+  return if depth == 1 { (x+y)%2 } else { (x*37+y*71)%256 }
+}
+effect fn adam7(source: &mut Bytes) -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let widths: [usize; 4] = [1,1,9,9]
+  let heights: [usize; 4] = [1,9,1,9]
+  let lefts: [usize; 7] = [0,4,0,2,0,1,0]
+  let tops: [usize; 7] = [0,0,4,0,2,0,1]
+  let dxs: [usize; 7] = [8,8,4,4,2,2,1]
+  let dys: [usize; 7] = [8,8,8,4,4,2,2]
+  let depths: [u8; 2] = [1,8]
+  let mut size: usize = 0
+  while size < 4 {
+    let width = widths[size]
+    let height = heights[size]
+    let mut d: usize = 0
+    while d < 2 {
+      let depth = depths[d]
+      let mut raw = Bytes.make()
+      let mut pass: usize = 0
+      while pass < 7 {
+        if lefts[pass] < width && tops[pass] < height {
+          let mut y = tops[pass]
+          while y < height {
+            run f.byte(&mut raw, 0)
+            let mut x = lefts[pass]
+            let mut packed: usize = 0
+            let mut bits: usize = 0
+            while x < width {
+              let value = grayValue(x, y, depth)
+              if depth == 8 { run f.byte(&mut raw, usize.toU8(value)) }
+              else {
+                packed = packed | usize.shiftLeft(value, 7-bits)
+                bits = bits + 1
+                if bits == 8 { run f.byte(&mut raw, usize.toU8(packed)) packed = 0 bits = 0 }
+              }
+              x = x + dxs[pass]
+            }
+            if bits != 0 { run f.byte(&mut raw, usize.toU8(packed)) }
+            y = y + dys[pass]
+          }
+        }
+        pass = pass + 1
+      }
+      let mut expected = Bytes.make()
+      let mut y: usize = 0
+      while y < height {
+        let mut x: usize = 0
+        while x < width {
+          let scale: usize = if depth == 1 { 255 } else { 1 }
+          let value = grayValue(x, y, depth) * scale
+          let gray = usize.toU8(value)
+          let pixel: [u8; 4] = [gray, gray, gray, 255]
+          run Bytes.append(&mut expected, &pixel)
+          x = x + 1
+        }
+        y = y + 1
+      }
+      let mut name = run named("adam7Gray", u8.toUsize(depth))
+      run Bytes.append(&mut name, b"Size")
+      run f.number(&mut name, width)
+      run Bytes.append(&mut name, b"By")
+      run f.number(&mut name, height)
+      let data = run frame(width, height, depth, 0, raw.asSlice(), 1, b"")
+      run sample(&mut source.*, run support.text(name.asSlice()), data.asSlice(), expected.asSlice(), width, height)
+      d = d + 1
+    }
+    size = size + 1
+  }
+}
+
+effect fn animated(source: &mut Bytes, apng: &Animation) -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let firstControl = run control(0,2,1,0,0,0,0)
+  let secondControl = run control(1,1,1,1,0,0,0)
+  let green = run f.zlib(b"\0\0\xff\0\xff")
+  let secondData = run frameData(2,green.asSlice())
+  let firstDefault = run f.join(&[apng.start.asSlice(), firstControl.asSlice(), apng.defaultImage.asSlice(), secondControl.asSlice(), secondData.asSlice(), apng.end.asSlice()])
+  run sample(&mut source.*, "apngDefaultFirst", firstDefault.asSlice(), b"\xff\0\0\xff\xff\0\0\xff", 2, 1)
+  let separateControl = run control(0,1,1,1,0,2,1)
+  let firstData = run frameData(1,apng.firstStream.asSlice())
+  let finalControl = run control(2,2,1,0,0,0,0)
+  let white = run f.zlib(b"\0\xff\xff\xff\xff\xff\xff\xff\xff")
+  let finalData = run frameData(3,white.asSlice())
+  let separate = run f.join(&[apng.start.asSlice(), apng.defaultImage.asSlice(), separateControl.asSlice(), firstData.asSlice(), finalControl.asSlice(), finalData.asSlice(), apng.end.asSlice()])
+  run sample(&mut source.*, "apngSeparateFirst", separate.asSlice(), b"\0\0\0\0\0\x80\0\x80", 2, 1)
+  let actl = run chunk(b"acTL", b"\0\0\0\x01\0\0\0\x01")
+  let splitControl = run control(0,1,1,1,0,0,0)
+  let a = run frameData(1,Slice.view<u8>(apng.firstStream.asSlice(),0,4))
+  let b = run frameData(2,Slice.view<u8>(apng.firstStream.asSlice(),4,apng.firstStream.asSlice().length-4))
+  let split = run f.join(&[SIGNATURE, apng.header.asSlice(), actl.asSlice(), apng.defaultImage.asSlice(), splitControl.asSlice(), a.asSlice(), b.asSlice(), apng.end.asSlice()])
+  run sample(&mut source.*, "apngSplitFrame", split.asSlice(), b"\0\0\0\0\0\x80\0\x80", 2, 1)
+}
+
+effect fn invalidParts(source: &mut Bytes, name: string, parts: &[&[u8]]) -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let data = run f.join(parts)
+  run invalid(&mut source.*, name, data.asSlice())
+}
+effect fn invalidSmall(source: &mut Bytes, name: string, depth: u8, color: u8, row: &[u8], extras: &[u8]) -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let data = run small(depth, color, row, extras)
+  run invalid(&mut source.*, name, data.asSlice())
+}
+effect fn invalidFrame(source: &mut Bytes, name: string, width: usize, height: usize, depth: u8, color: u8, raw: &[u8]) -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let data = run frame(width,height,depth,color,raw,0,b"")
+  run invalid(&mut source.*, name, data.asSlice())
+}
+effect fn malformed(apng: &Animation) -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let mut source = run Bytes.copy(String.utf8Bytes(t.png2))
+  let valid = run small(8,6,b"\xff\0\0\xff\0\xff\0\xff",b"")
+  let ihdr = run header(2,1,8,6,0)
+  let stream = run f.zlib(b"\0\xff\0\0\xff\0\xff\0\xff")
+  let idat = run chunk(b"IDAT", stream.asSlice())
+  let end = run chunk(b"IEND",b"")
+  let badCrc = run f.changed(valid.asSlice(), valid.asSlice().length-1, valid.asSlice()[valid.asSlice().length-1] ^ 1)
+  run invalid(&mut source, "badCrc", badCrc.asSlice())
+  let unknown = run chunk(b"ABCD",b"")
+  run invalidParts(&mut source,"unknownCritical",&[SIGNATURE,ihdr.asSlice(),unknown.asSlice(),idat.asSlice(),end.asSlice()])
+  run invalidParts(&mut source,"duplicateHeader",&[SIGNATURE,ihdr.asSlice(),ihdr.asSlice(),idat.asSlice(),end.asSlice()])
+  let firstIdat = run chunk(b"IDAT",Slice.view<u8>(stream.asSlice(),0,4))
+  let lastIdat = run chunk(b"IDAT",Slice.view<u8>(stream.asSlice(),4,stream.asSlice().length-4))
+  let textChunk = run chunk(b"tEXt",b"k\0v")
+  run invalidParts(&mut source,"separatedData",&[SIGNATURE,ihdr.asSlice(),firstIdat.asSlice(),textChunk.asSlice(),lastIdat.asSlice(),end.asSlice()])
+  let excess = run f.repeated(255,10000)
+  let excessRaw = run f.join(&[b"\0",excess.asSlice()])
+  run invalidFrame(&mut source,"excessInflation",2,1,8,6,excessRaw.asSlice())
+  run invalidFrame(&mut source,"shortInflation",2,1,8,6,b"\0\xff")
+  run invalidFrame(&mut source,"badFilter",2,1,8,6,b"\x05\xff\xff\xff\xff\xff\xff\xff\xff")
+  let extraStream = run f.join(&[stream.asSlice(),b"junk"])
+  let extraIdat = run chunk(b"IDAT",extraStream.asSlice())
+  run invalidParts(&mut source,"extraCompressedBytes",&[SIGNATURE,ihdr.asSlice(),extraIdat.asSlice(),end.asSlice()])
+  let corrupt = run f.changed(stream.asSlice(),stream.asSlice().length-1,stream.asSlice()[stream.asSlice().length-1]^1)
+  let corruptIdat = run chunk(b"IDAT",corrupt.asSlice())
+  run invalidParts(&mut source,"invalidZlibChecksum",&[SIGNATURE,ihdr.asSlice(),corruptIdat.asSlice(),end.asSlice()])
+  run invalidFrame(&mut source,"hugeDimensions",2147483647,2147483647,8,6,b"")
+  run invalidFrame(&mut source,"zeroWidth",0,1,8,6,b"")
+  run invalidFrame(&mut source,"badDepth",2,1,4,6,b"\0\0")
+  let onePalette = run chunk(b"PLTE",b"\xff\0\0")
+  run invalidSmall(&mut source,"paletteIndex",8,3,b"\0\x02",onePalette.asSlice())
+  let zeroGamma = run chunk(b"gAMA",b"\0\0\0\0")
+  run invalidSmall(&mut source,"zeroGamma",8,0,b"\0\xff",zeroGamma.asSlice())
+  let gamma = run chunk(b"gAMA",b"\0\0\xb1\x8f")
+  let duplicateGamma = run f.join(&[gamma.asSlice(),gamma.asSlice()])
+  run invalidSmall(&mut source,"duplicateGamma",8,0,b"\0\xff",duplicateGamma.asSlice())
+  let shortChromaticities = run f.repeated(0,31)
+  let shortChrm = run chunk(b"cHRM",shortChromaticities.asSlice())
+  run invalidSmall(&mut source,"shortChromaticities",8,0,b"\0\xff",shortChrm.asSlice())
+  let badIntent = run chunk(b"sRGB",b"\x04")
+  run invalidSmall(&mut source,"badSrgbIntent",8,0,b"\0\xff",badIntent.asSlice())
+  run invalidParts(&mut source,"lateGamma",&[SIGNATURE,ihdr.asSlice(),idat.asSlice(),gamma.asSlice(),end.asSlice()])
+  let profile = run f.zlib(b"profile")
+  let badNamePayload = run f.join(&[b" bad\0\0",profile.asSlice()])
+  let badName = run chunk(b"iCCP",badNamePayload.asSlice())
+  run invalidSmall(&mut source,"badProfileName",8,2,b"\0\0\0\0\0\0",badName.asSlice())
+  let badCompressionPayload = run f.join(&[b"name\0\x01",profile.asSlice()])
+  let badCompression = run chunk(b"iCCP",badCompressionPayload.asSlice())
+  run invalidSmall(&mut source,"badProfileCompression",8,2,b"\0\0\0\0\0\0",badCompression.asSlice())
+  let badStream = run chunk(b"iCCP",b"name\0\0broken")
+  run invalidSmall(&mut source,"badProfileStream",8,2,b"\0\0\0\0\0\0",badStream.asSlice())
+  let bomb = run Bytes.zeroed(16777217)
+  let compressedBomb = run f.zlib(bomb.asSlice())
+  let bombPayload = run f.join(&[b"name\0\0",compressedBomb.asSlice()])
+  let bombIcc = run chunk(b"iCCP",bombPayload.asSlice())
+  run invalidSmall(&mut source,"profileInflationBomb",8,2,b"\0\0\0\0\0\0",bombIcc.asSlice())
+  let wrongSequence = run control(1,2,1,0,0,0,0)
+  run invalidParts(&mut source,"apngSequence",&[apng.start.asSlice(),wrongSequence.asSlice(),apng.defaultImage.asSlice(),apng.end.asSlice()])
+  let first = run control(0,2,1,0,0,0,0)
+  run invalidParts(&mut source,"apngFrameCount",&[apng.start.asSlice(),first.asSlice(),apng.defaultImage.asSlice(),apng.end.asSlice()])
+  let outside = run control(0,2,1,1,0,0,0)
+  let firstData = run frameData(1,apng.firstStream.asSlice())
+  run invalidParts(&mut source,"apngOutsideCanvas",&[apng.start.asSlice(),apng.defaultImage.asSlice(),outside.asSlice(),firstData.asSlice(),apng.end.asSlice()])
+  let missing = run control(1,1,1,0,0,0,0)
+  run invalidParts(&mut source,"apngMissingFrameData",&[apng.start.asSlice(),first.asSlice(),apng.defaultImage.asSlice(),missing.asSlice(),apng.end.asSlice()])
+  let blend = run control(0,2,1,0,0,0,2)
+  run invalidParts(&mut source,"apngInvalidBlend",&[apng.start.asSlice(),blend.asSlice(),apng.defaultImage.asSlice(),apng.end.asSlice()])
+  let partial = run control(0,1,1,0,0,0,0)
+  run invalidParts(&mut source,"apngDefaultPartial",&[apng.start.asSlice(),partial.asSlice(),apng.defaultImage.asSlice(),apng.end.asSlice()])
+  let encoded = run f.literal(valid.asSlice())
+  run f.render(&mut source,t.png4,&[run support.text(encoded.asSlice())])
+  run f.saveSource("png_invalid_tests.silk",source.asSlice())
+}
+effect fn metadata() -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let mut profile = run Bytes.zeroed(132)
+  let profileBytes = profile.asMutSlice()
+  profileBytes[3] = 132
+  let rgb = b"RGB "
+  let acsp = b"acsp"
+  let mut i: usize = 0
+  while i < 4 {
+    profileBytes[16+i] = rgb[i]
+    profileBytes[36+i] = acsp[i]
+    i = i + 1
+  }
+  let gamma = run chunk(b"gAMA",b"\0\0\xb1\x8f")
+  let coordinates: [usize; 8] = [31270,32900,64000,33000,30000,60000,15000,6000]
+  let mut chromaticities = Bytes.make()
+  i = 0
+  while i < 8 { run f.be(&mut chromaticities,coordinates[i],4) i = i + 1 }
+  let chrm = run chunk(b"cHRM",chromaticities.asSlice())
+  let srgb = run chunk(b"sRGB",b"\x02")
+  let metadataChunks = run f.join(&[gamma.asSlice(),chrm.asSlice(),srgb.asSlice()])
+  let metadataPng = run small(8,6,b"\xff\0\0\xff\0\xff\0\xff",metadataChunks.asSlice())
+  let compressedProfile = run f.zlib(profile.asSlice())
+  let iccPayload = run f.join(&[b"fixture\0\0",compressedProfile.asSlice()])
+  let iccp = run chunk(b"iCCP",iccPayload.asSlice())
+  let iccPng = run small(8,2,b"\xff\0\0\0\xff\0",iccp.asSlice())
+  let mut source = run Bytes.copy(String.utf8Bytes(t.png5))
+  let a = run f.literal(metadataPng.asSlice())
+  let b = run f.literal(iccPng.asSlice())
+  run f.render(&mut source,t.png6,&[run support.text(a.asSlice()),run support.text(b.asSlice())])
+  run f.saveSource("png_metadata_tests.silk",source.asSlice())
+}

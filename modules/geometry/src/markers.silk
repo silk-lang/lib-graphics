@@ -95,7 +95,7 @@ fn bisect(incoming: f64, outgoing: f64) -> f64 {
 effect fn tangents(segment: &Segment, from: Point, initial: Point, mapped: bool) -> Tangents
   ! MarkerError {
   return match &segment.* {
-    Segment.MoveTo { to } => Tangents {
+    Segment.MoveTo { .. } => Tangents {
       start: Point.new(1.0, 0.0),
       end: Point.new(1.0, 0.0),
       defined: false,
@@ -152,7 +152,7 @@ effect fn tangents(segment: &Segment, from: Point, initial: Point, mapped: bool)
         NormalizedArc.Limited => {
           fail MarkerError.NumericLimit
         }
-        NormalizedArc.Ellipse { center, axisX, axisY, sweep, end } => {
+        NormalizedArc.Ellipse { axisX, axisY, sweep, .. } => {
           // d/dt (center + axisX*cos(t) + axisY*sin(t)), with t=0 at
           // the source start. Positive rescaling avoids overflowing the sum.
           let scale = f64.max(
@@ -202,8 +202,8 @@ fn endpoint(segment: &Segment, initial: Point) -> Point {
   return match &segment.* {
     Segment.MoveTo { to } => to
     Segment.LineTo { to } => to
-    Segment.QuadraticTo { control, to } => to
-    Segment.CubicTo { control1, control2, to } => to
+    Segment.QuadraticTo { to, .. } => to
+    Segment.CubicTo { to, .. } => to
     Segment.ArcTo { arc } => arc.to
     Segment.Close => initial
   }

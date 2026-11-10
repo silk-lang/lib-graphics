@@ -232,7 +232,7 @@ effect fn appendAll(path: &mut Path, segments: &[Segment]) -> ()
   run Path.reserve(&mut path.*, segments.length)
   let mut i: usize = 0
   while i < segments.length {
-    let accepted = run Path.append(&mut path.*, segments[i])
+    drop run Path.append(&mut path.*, segments[i])
     i = i + 1
   }
 }

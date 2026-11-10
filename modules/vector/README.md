@@ -69,7 +69,7 @@ import the package as `vector`.
 From the repository root:
 
 ```sh
-node scripts/check-vector.mjs
+silk task check-vector
 ```
 
 This runs the 170 unit tests, checks the packages, and renders every GPU scene test on both the
@@ -78,7 +78,7 @@ part. It runs in the `graphics` CI workflow.
 
 ## Performance
 
-`node scripts/bench-vector.mjs` and `node scripts/bench-filters.mjs` compare against tiny-skia
+`silk task bench vector` and `silk task bench filters` compare against tiny-skia
 and resvg on the same scenes, and also report how far the images differ. As of 2026-10-29,
 vector takes 0.17–0.63× tiny-skia's time on fills, strokes, gradients, polygons and icons, and
 matches it on image patterns. Every filter primitive beats resvg; blur, for example, takes

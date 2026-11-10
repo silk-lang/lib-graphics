@@ -1,0 +1,189 @@
+import silk.cli.task { Task, TaskError }
+import silk.collections.bytes { Bytes }
+import silk.collections.list { List }
+import silk.core.effect { Effect }
+import silk.core.option { Option }
+import silk.core.result { Result }
+import silk.encoding.base64 { Base64, Base64Error }
+import silk.io.writer { Writer, WriterError }
+import silk.io.writer_native { StdoutWriter }
+import silk.json.value { Json, JsonEntry, Value, JsonNumber }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+import silk.system.child_process { ChildProcess, ProcessError }
+import silk.system.filesystem { FileError, FileSystem, Path }
+import silk.system.host_input { HostInput, HostInputError }
+import silk.text.format { Format }
+import silk.text.string { String }
+import silk.num.u64
+import silk.num.u8
+import silk.num.usize
+import benchmarks
+import browser_cdp as cdp
+import browser_display as display
+import generators
+import support
+
+pub effect fn perform() -> ()
+  ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let wasm = run benchmarks.build("ui_renderer/browser", false, true)
+  run generators.browserExports(true)
+  let executable = run cdp.findChrome("")
+  let arguments = ["--enable-unsafe-webgpu", "--use-angle=swiftshader", "--enable-features=Vulkan", "--disable-vulkan-surface", "--enable-unsafe-swiftshader", "--allow-file-access-from-files"]
+  let mut server = Option<display.Display>.None
+  let mut browser = if support.OS == "linux" {
+    server = Option<display.Display>.Some { value: run display.start() }
+    let mut linux = List<string>.make()
+    run linux.appendSlice(&arguments)
+    run linux.append("--use-vulkan=swiftshader")
+    match &server {
+      Option<display.Display>.Some { value } => run cdp.openWithEnvironment(String.view(&executable), false, linux.asSlice(), value.environment.asSlice())
+      Option<display.Display>.None => run Task.abort("Xvfb did not start")
+    }
+  } else { run cdp.open(String.view(&executable), true, &arguments) }
+  browser.timeoutMs = 90000
+  let outcome = run Effect.result(compare(&mut browser, &wasm))
+  run cdp.close(&mut browser)
+  if let Option<display.Display>.Some { value } = &server { run display.release(&value) }
+  match move outcome {
+    Result<(), TaskError | FileError | HostInputError | OutOfMemoryError | WriterError>.Success { .. } => {}
+    Result<(), TaskError | FileError | HostInputError | OutOfMemoryError | WriterError>.Failure { error } => { fail move error }
+  }
+}
+
+effect fn putSource(entries: &mut List<JsonEntry>, name: string, path: &Path) -> ()
+  ! TaskError | FileError | OutOfMemoryError ? &mut Allocator | &mut FileSystem {
+  let bytes = run FileSystem.readFile(path)
+  run entries.append(JsonEntry { key: run String.copy(name), value: Value.String { text: run String.copy(run support.text(Bytes.asSlice(&bytes))) } })
+}
+
+effect fn base64(bytes: &[u8]) -> String ! TaskError | OutOfMemoryError ? &mut Allocator {
+  let mut encoded = List<u8>.make()
+  run encoded.appendRepeated(0, ((bytes.length + 2) / 3) * 4)
+  match Base64.encodeInto(encoded.asMutSlice(), bytes) {
+    Result<usize, Base64Error>.Success { .. } => {}
+    Result<usize, Base64Error>.Failure { .. } => run Task.abort("Wasm Base64 encoding failed")
+  }
+  let mut result = run String.copy("data:application/wasm;base64,")
+  run result.append(run support.text(encoded.asSlice()))
+  return move result
+}
+
+effect fn array<'a>(value: &'a Value, name: string) -> &'a [Value]
+  ! TaskError | OutOfMemoryError ? &mut Allocator {
+  let field = match Json.field(value, name) {
+    Option<&Value>.Some { value: found } => found
+    Option<&Value>.None => run Task.abort("Browser sample omitted pixels")
+  }
+  return match &field.* {
+    Value.Array { values } => List<Value>.asSlice(&values)
+    _ => run Task.abort("Browser pixels are not an array")
+  }
+}
+
+effect fn unsigned(value: &Value) -> u64 ! TaskError | OutOfMemoryError ? &mut Allocator {
+  return match Json.asU64(Option<&Value>.Some { value: value }) {
+    Option<u64>.Some { value: found } => found
+    Option<u64>.None => run Task.abort("Browser pixel is not an unsigned integer")
+  }
+}
+
+effect fn compare(browser: &mut cdp.Browser, wasm: &Path) -> ()
+  ! TaskError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut FileSystem {
+  let session = run cdp.page(&mut browser.*)
+  let html = run support.path(".cache/browser/graphics.html")
+  run FileSystem.writeFileWithParents(&html, b"<!doctype html><title>Silk graphics WebGPU fixtures</title>")
+  let mut location = run String.copy("file://")
+  // File URL quoting preserves spaces and non-ASCII path bytes.
+  let pathBytes = Path.rawBytes(&html)
+  let hex = "0123456789ABCDEF"
+  let mut at: usize = 0
+  while at < pathBytes.length {
+    let b = pathBytes[at]
+    if (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b == 47 || b == 45 || b == 46 || b == 95 || b == 126 {
+      run location.append(run support.text(&[b]))
+    } else {
+      run location.append("%")
+      run location.append(String.slice(hex, u8.toUsize(b / 16), 1))
+      run location.append(String.slice(hex, u8.toUsize(b % 16), 1))
+    }
+    at = at + 1
+  }
+  let quoted = run cdp.quoted(String.view(&location))
+  let mut navigate = run String.copy("{\"url\":")
+  run navigate.append(String.view(&quoted))
+  run navigate.append("}")
+  let params = run cdp.parse(String.utf8Bytes(String.view(&navigate)))
+  let navigated = run cdp.send(&mut browser.*, "Page.navigate", &params, String.view(&session))
+  drop navigated
+  let native = run generators.nativeRoot()
+  let mut entries = List<JsonEntry>.make()
+  let schema = run Path.join(&native, "modules/gpu/webgpu/browser/generated_schema.ts")
+  let host = run Path.join(&native, "modules/gpu/webgpu/browser/host.ts")
+  let runner = run Path.join(&native, "modules/gpu/webgpu/browser/runner.ts")
+  run putSource(&mut entries, "schema", &schema)
+  run putSource(&mut entries, "host", &host)
+  run putSource(&mut entries, "runner", &runner)
+  let wasmBytes = run FileSystem.readFile(wasm)
+  run entries.append(JsonEntry { key: run String.copy("wasm"), value: Value.String { text: run base64(Bytes.asSlice(&wasmBytes)) } })
+  let payload = Value.Object { entries: move entries }
+  let json = run cdp.stringify(&payload)
+  let harness = run support.read("modules/ui_renderer/browser/harness.js")
+  let mut initialize = run String.copy(run support.text(Bytes.asSlice(&harness)))
+  run initialize.append("\ngraphicsInitialize(")
+  run initialize.append(String.view(&json))
+  run initialize.append(")")
+  let initialized = run cdp.evaluate(&mut browser.*, String.view(&initialize), String.view(&session))
+  drop initialized
+  let names = ["cards", "borders", "shadows", "layers", "nested", "gradients", "effects", "scrolled", "text ramp"]
+  let mut failures: usize = 0
+  let mut index: usize = 0
+  let mut writer = StdoutWriter.make()
+  while index < 18 {
+    let indexValue = Value.Number { value: JsonNumber.Unsigned { value: usize.toU64(index) } }
+    let encoded = run cdp.stringify(&indexValue)
+    let mut expression = run String.copy("graphicsSample(")
+    run expression.append(String.view(&encoded))
+    run expression.append(")")
+    let result = run cdp.evaluate(&mut browser.*, String.view(&expression), String.view(&session))
+    let cpu = run array(&result, "compute")
+    let gpu = run array(&result, "rgba")
+    if cpu.length * 4 != gpu.length || gpu.length == 0 { run Task.abort("Browser reference size differs") }
+    let mut maximum: u64 = 0
+    let mut over: usize = 0
+    let mut sum: u64 = 0
+    let mut channel: usize = 0
+    while channel < gpu.length {
+      let word = run unsigned(&cpu[channel / 4])
+      let divisor: u64 = if channel % 4 == 0 { 1 } else if channel % 4 == 1 { 256 } else if channel % 4 == 2 { 65536 } else { 16777216 }
+      let expected = (word / divisor) % 256
+      let actual = run unsigned(&gpu[channel])
+      if actual > 255 || word > 4294967295 { run Task.abort("Browser pixel out of range") }
+      let delta = if actual > expected { actual - expected } else { expected - actual }
+      if delta > maximum { maximum = delta }
+      if delta > 8 { over = over + 1 }
+      sum = sum + delta
+      channel = channel + 1
+    }
+    let text = index % 9 == 8
+    let mean = u64.toF64(sum) / usize.toF64(gpu.length)
+    let share = usize.toF64(over) / usize.toF64(gpu.length)
+    let maxAllowed: u64 = if text { 1 } else { 48 }
+    let ok = maximum <= maxAllowed && share <= (if text { 0.0 } else { 0.006 }) && mean <= (if text { 0.1 } else { 0.5 })
+    if !ok { failures = failures + 1 }
+    run Format.format("{status} {name} ({target}): max delta {maximum}, {over} of {channels} channels over 8, mean {mean:.4}\n", &.{ status: if ok { "PASS" } else { "FAIL" }, name: names[index % 9], target: if index < 9 { "rgba8" } else { "bgra8" }, maximum: maximum, over: over, channels: gpu.length, mean: mean }) |> Effect.provideMut<Writer>(&mut writer)
+    index = index + 1
+  }
+  let errors = browser.errors.asSlice()
+  let mut errorIndex: usize = 0
+  while errorIndex < errors.length {
+    let event = Json.field(&errors[errorIndex], "method") |> Json.asString |> Option<string>.unwrapOr("")
+    let detail = run cdp.stringify(&errors[errorIndex])
+    run support.errors(String.utf8Bytes(String.view(&detail)))
+    run support.errors(b"\n")
+    if event == "Runtime.exceptionThrown" { run Task.abort("Browser reported an uncaught exception") }
+    errorIndex = errorIndex + 1
+  }
+  if failures != 0 { run Task.abort("Browser rendering comparison failed") }
+}

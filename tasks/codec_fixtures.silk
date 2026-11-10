@@ -1,0 +1,35 @@
+//! Explicit regeneration of the original independent codec fixtures.
+import fixtures_png
+import fixtures_jpeg
+import silk.cli.task { TaskError }
+import silk.io.writer { WriterError }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+import silk.system.child_process { ChildProcess, ProcessError }
+import silk.system.filesystem { FileSystem, FileError }
+import silk.system.host_input { HostInput, HostInputError }
+
+pub effect fn png() -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  run fixtures_png.generate()
+}
+
+pub effect fn jpeg() -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  run fixtures_jpeg.baseline()
+}
+
+pub effect fn progressive() -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  run fixtures_jpeg.progressive()
+}
+
+pub effect fn metadata() -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  run fixtures_jpeg.metadata()
+}
+
+pub effect fn benchmark(output: string) -> () ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  run fixtures_jpeg.benchmark(output)
+}
+

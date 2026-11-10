@@ -27,7 +27,7 @@ import silk.num.u32
 import silk.num.usize
 import silk.num.i32
 import silk.num.f64
-import vector.geometry { Affine, Rect, rectAt }
+import vector.geometry { Affine, rectAt }
 import vector.projective { Homography }
 import vector.path { Path }
 import vector.strips { Rasterizer, Coverage, NONZERO, EVENODD }
@@ -62,7 +62,6 @@ import vector.filter {
   MATRIX,
   SATURATE,
   HUE_ROTATE,
-  LUMINANCE_TO_ALPHA,
   ComponentTransfer,
   Convolution,
   transferTable,
@@ -72,9 +71,7 @@ import vector.filter {
   displacementTable,
   MORPHOLOGY_ERODE,
   MORPHOLOGY_DILATE,
-  EDGE_DUPLICATE,
   EDGE_WRAP,
-  EDGE_NONE,
   CHANNEL_R,
   CHANNEL_G,
   CHANNEL_A,

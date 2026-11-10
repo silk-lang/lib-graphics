@@ -80,10 +80,10 @@ effect fn profile(data: &[u8]) -> Bytes
   let mut decoder = match move created {
     Result<Decoder, DecodeError | OutOfMemoryError>.Success { value } => move value
     Result<Decoder, DecodeError | OutOfMemoryError>.Failure { error } => match &error {
-      OutOfMemoryError problem => {
+      OutOfMemoryError _ => {
         fail OutOfMemoryError {}
       }
-      DecodeError problem => {
+      DecodeError _ => {
         fail PngError.InvalidData
       }
     }
@@ -95,7 +95,7 @@ effect fn profile(data: &[u8]) -> Bytes
       }
       result.truncate(value.written)
     }
-    Result<Progress, DecodeError>.Failure { error } => {
+    Result<Progress, DecodeError>.Failure { error: _ } => {
       fail PngError.InvalidData
     }
   }
@@ -550,10 +550,10 @@ pub effect fn decodeWithMetadata<'a>(data: &'a [u8]) -> Decoded
     Result<Decoder, DecodeError | OutOfMemoryError>.Success { value } => move value
     Result<Decoder, DecodeError | OutOfMemoryError>.Failure { error } => {
       match &error {
-        OutOfMemoryError problem => {
+        OutOfMemoryError _ => {
           fail OutOfMemoryError {}
         }
-        DecodeError problem => {
+        DecodeError _ => {
           fail PngError.InvalidData
         }
       }
@@ -566,7 +566,7 @@ pub effect fn decodeWithMetadata<'a>(data: &'a [u8]) -> Decoded
         fail PngError.InvalidData
       }
     }
-    Result<Progress, DecodeError>.Failure { error } => {
+    Result<Progress, DecodeError>.Failure { error: _ } => {
       fail PngError.InvalidData
     }
   }

@@ -1,0 +1,178 @@
+import silk.cli.task { Task, TaskError }
+import silk.collections.bytes { Bytes }
+import silk.collections.list { List }
+import silk.core.effect { Effect }
+import silk.core.option { Option }
+import silk.core.result { Result }
+import silk.io.writer { Writer, WriterError }
+import silk.io.writer_native { StdoutWriter, StderrWriter }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+import silk.system.child_process { ChildProcess, ProcessError, ProcessOutcome }
+import silk.system.filesystem { FileError, FileSystem, Path }
+import silk.system.host_input { HostInput, HostInputError }
+import silk.text.string { String, InvalidUtf8, Split }
+pub const OS: string = Intrinsic.targetOperatingSystem()
+pub const ARCH: string = Intrinsic.targetArchitecture()
+static if Intrinsic.targetOperatingSystem() == "windows" {
+  import silk.platform.windows.path { WindowsPath }
+  import windows_environment
+} else {
+  import silk.system.subprocess { Subprocess }
+}
+
+pub effect fn text(bytes: &[u8]) -> string ! TaskError | OutOfMemoryError ? &mut Allocator {
+  return match String.fromUtf8(bytes) {
+    Result<string, InvalidUtf8>.Success { value } => value
+    Result<string, InvalidUtf8>.Failure { .. } => run Task.abort("Expected UTF-8 text")
+  }
+}
+
+pub effect fn stringPath(value: &Path) -> string ! TaskError | OutOfMemoryError ? &mut Allocator {
+  return run text(Path.rawBytes(value))
+}
+
+pub effect fn path(relative: string) -> Path
+  ! TaskError | FileError | HostInputError | OutOfMemoryError ? &mut HostInput | &mut Allocator {
+  let root = run Task.root()
+  if String.startsWith(relative, "/") { return run Path.make(relative) }
+  static if Intrinsic.targetOperatingSystem() == "windows" {
+    return run WindowsPath.resolve(&root, relative)
+  } else {
+    return run Path.resolve(&root, relative)
+  }
+}
+
+pub effect fn read(relative: string) -> Bytes
+  ! TaskError | FileError | HostInputError | OutOfMemoryError ? &mut HostInput | &mut Allocator | &mut FileSystem {
+  let source = run path(relative)
+  return run FileSystem.readFile(&source)
+}
+
+pub effect fn save(relative: string, bytes: &[u8]) -> ()
+  ! TaskError | FileError | HostInputError | OutOfMemoryError ? &mut HostInput | &mut Allocator | &mut FileSystem {
+  let destination = run path(relative)
+  run FileSystem.writeFileWithParents(&destination, bytes)
+}
+
+pub effect fn output(bytes: &[u8]) -> () ! WriterError {
+  let mut writer = StdoutWriter.make()
+  run Writer.writeAll(bytes) |> Effect.provideMut<Writer>(&mut writer)
+}
+
+pub effect fn errors(bytes: &[u8]) -> () ! WriterError {
+  let mut writer = StderrWriter.make()
+  run Writer.writeAll(bytes) |> Effect.provideMut<Writer>(&mut writer)
+}
+
+pub fn equal(a: &[u8], b: &[u8]) -> bool {
+  if a.length != b.length { return false }
+  let mut at: usize = 0
+  while at < a.length {
+    if a[at] != b[at] { return false }
+    at = at + 1
+  }
+  return true
+}
+
+pub effect fn program(name: string) -> Path
+  ! TaskError | FileError | HostInputError | OutOfMemoryError ? &mut HostInput | &mut Allocator | &mut FileSystem {
+  if String.contains(name, "/") || String.contains(name, "\\") { return run path(name) }
+  let raw = match move run HostInput.variableNamed("PATH") {
+    Option<Bytes>.Some { value } => move value
+    Option<Bytes>.None => run Task.abort("PATH is not set")
+  }
+  let separator = if OS == "windows" { ";" } else { ":" }
+  let mut parts = String.split(run text(Bytes.asSlice(&raw)), separator)
+  while let Option<string>.Some { value } = Split.next(&mut parts) {
+    if value == "" { continue }
+    let directory = run path(value)
+    let mut filename = run String.copy(name)
+    static if Intrinsic.targetOperatingSystem() == "windows" {
+      if !String.endsWith(name, ".exe") { run String.append(&mut filename, ".exe") }
+    }
+    let candidate = run Path.join(&directory, String.view(&filename))
+    if run FileSystem.exists(&candidate) { return move candidate }
+  }
+  run Task.abort(name)
+}
+
+fn timeoutProgram() -> string<'static> {
+  return if OS == "windows" { "busybox.exe" }
+    else if OS == "darwin" { "gtimeout" } else { "timeout" }
+}
+
+pub effect fn exec(programName: string, arguments: &[string]) -> ()
+  ! TaskError | HostInputError | OutOfMemoryError
+  ? &mut HostInput | &mut Allocator | &mut FileSystem {
+  let mut words = List<string>.make()
+  static if Intrinsic.targetOperatingSystem() == "windows" {
+    run words.append("timeout")
+    run words.append("-s")
+    run words.append("KILL")
+  } else { run words.append("--signal=KILL") }
+  run words.append("600")
+  run words.append(programName)
+  let mut at: usize = 0
+  while at < arguments.length {
+    run words.append(arguments[at])
+    at = at + 1
+  }
+  run Task.exec(timeoutProgram(), words.asSlice())
+}
+
+pub effect fn silk(arguments: &[string]) -> ()
+  ! TaskError | HostInputError | OutOfMemoryError
+  ? &mut HostInput | &mut Allocator | &mut FileSystem {
+  let programName = run compiler()
+  run exec(String.view(&programName), arguments)
+}
+
+pub effect fn captured(programName: string, arguments: &[string], cwd: &Path) -> ProcessOutcome
+  ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  return run timed(programName, arguments, "600", cwd)
+}
+
+pub effect fn timed(programName: string, arguments: &[string], seconds: string, cwd: &Path) -> ProcessOutcome
+  ! TaskError | ProcessError | FileError | HostInputError | OutOfMemoryError | WriterError
+  ? &mut HostInput | &mut Allocator | &mut ChildProcess | &mut FileSystem {
+  let executable = run program(timeoutProgram())
+  let mut request = run ChildProcess.requestWithin(&executable, cwd)
+  static if Intrinsic.targetOperatingSystem() == "windows" {
+    run windows_environment.inherit(&mut request)
+  } else {
+    run Subprocess.inheritEnvironment(&mut request)
+  }
+  static if Intrinsic.targetOperatingSystem() == "windows" {
+    run ChildProcess.addArgument(&mut request, "timeout")
+    run ChildProcess.addArgument(&mut request, "-s")
+    run ChildProcess.addArgument(&mut request, "KILL")
+  } else { run ChildProcess.addArgument(&mut request, "--signal=KILL") }
+  run ChildProcess.addArgument(&mut request, seconds)
+  run ChildProcess.addArgument(&mut request, programName)
+  let mut at: usize = 0
+  while at < arguments.length {
+    run ChildProcess.addArgument(&mut request, arguments[at])
+    at = at + 1
+  }
+  let result = run ChildProcess.submit(&request)
+  let succeeded = match ChildProcess.exitCode(&result) {
+    Option<i32>.Some { value } => value == 0
+    Option<i32>.None => false
+  }
+  if !succeeded {
+    run output(ChildProcess.outputBytes(&result))
+    run errors(ChildProcess.errorBytes(&result))
+    run Task.abort("Command failed or was terminated")
+  }
+  return move result
+}
+
+pub effect fn compiler() -> String
+  ! TaskError | HostInputError | OutOfMemoryError ? &mut HostInput | &mut Allocator {
+  let raw = match move run HostInput.variableNamed("SILK_COMPILER") {
+    Option<Bytes>.Some { value } => move value
+    Option<Bytes>.None => run Task.abort("Run this program with silk task")
+  }
+  return run String.copy(run text(Bytes.asSlice(&raw)))
+}

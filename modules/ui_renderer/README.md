@@ -45,7 +45,7 @@ hue arcs, wide gamut spaces) gets a 256-entry ramp of premultiplied RGBA8 words,
 CPU with the same `color.mix` the CPU reference uses, in a storage buffer the quad and path
 shaders read. Either way the parameter steps in 1/255, as the CPU reference's ramp does.
 Content masks clip by pixel area. `shaders/common.wgsl` holds what the pipelines share; edit the
-`.wgsl` files and run `node scripts/embed-shaders.mjs`, never the generated module.
+`.wgsl` files and run `silk task embed-shaders`, never the generated module.
 
 All instances of a frame go into one storage buffer per kind (every layer's sorted list, in layer
 order), uploaded with `queue.writeBuffer`. The buffers persist across frames and are replaced
@@ -116,10 +116,13 @@ The test allows 48, 0.6% and 0.5 (exact for the text ramp).
 From the repository root, with a Vulkan, Metal or D3D driver (CI uses lavapipe):
 
 ```sh
-node scripts/check.mjs                    # shaders, packages, CPU tests, wasm32, GPU comparisons
-node scripts/test-browser.mjs             # the comparison in installed Chromium
-node scripts/bench-ui-renderer.mjs        # dense scene against bench/budget.json
+silk task check                        # shaders, packages, CPU tests, wasm32, GPU comparisons
+silk task test-browser                 # the comparison in installed Chromium
+silk task bench ui-renderer            # dense scene against bench/budget.json
 ```
+
+The browser task currently runs on macOS/Linux; the root README documents the
+Windows managed-process compiler blocker. Native GPU tasks also prepare Windows.
 
 The comparison renders eight fixtures (the four `ui_scene` golden scenes, nested isolated layers
 with clipped sprites and paths, gradients in eight interpolations on quads and paths, layer/backdrop

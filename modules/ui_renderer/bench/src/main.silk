@@ -3,12 +3,11 @@
 //!
 //! Prints one `name value` line per measurement, the median over the timed frames in
 //! milliseconds: `build` (clear, paint and finish the scene on the CPU), `encode` (pack, upload
-//! and record the frame) and `frame` (encode, submit and wait for the GPU). `scripts/bench-ui-renderer.mjs`
+//! and record the frame) and `frame` (encode, submit and wait for the GPU). `silk task bench ui-renderer`
 //! compares them with the recorded budget.
-import webgpu.runtime { Device, GpuError, Instance, RequestAdapterOptions }
+import webgpu.runtime { GpuError, Instance, RequestAdapterOptions }
 import webgpu.runtime as runtime
 import webgpu.resources as gpu
-import webgpu.resources { Queue, Texture }
 import webgpu.descriptors {
   BufferDescriptor,
   DeviceDescriptor,
