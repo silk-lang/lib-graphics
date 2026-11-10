@@ -1,10 +1,17 @@
-import ellipse_tests
+// Imported only to register each module's tests with this root.
+import ellipse_tests as _ellipse_tests
+import projective_tests as _projective_tests
+import stroke_projective_tests as _stroke_projective_tests
+import stroke_space_tests as _stroke_space_tests
+import path_metric_tests as _path_metric_tests
+import projective_paint_tests as _projective_paint_tests
+import stroke_tests as _stroke_tests
+import stroke_curve_tests as _stroke_curve_tests
+import stroke_arcs_tests as _stroke_arcs_tests
+import paint_tests as _paint_tests
+import layer_tests as _layer_tests
+import filter_tests as _filter_tests
 import silk.geometry.vector { Vector2 }
-import projective_tests
-import stroke_projective_tests
-import stroke_space_tests
-import path_metric_tests
-import projective_paint_tests
 import silk.testing.testing { AssertionError, Testing }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
 import silk.core.effect { Effect }
@@ -14,7 +21,7 @@ import silk.num.f64
 import silk.num.u8
 import silk.num.u32
 import silk.num.usize
-import geometry { Point, Affine, Rect, rectAt }
+import geometry { Point, Affine, rectAt }
 import path { Path }
 import flatten { Line }
 import flatten as flattening
@@ -275,12 +282,6 @@ test effect fn pixmapCompositesSourceOver() -> ()
   )
 }
 
-import stroke_tests
-import stroke_curve_tests
-import stroke_arcs_tests
-import paint_tests
-import layer_tests
-import filter_tests
 
 // SVG 2 https://www.w3.org/TR/2018/CR-SVG2-20181004/painting.html#ShapeRendering
 // The spec permits disabled AA; the library's explicit quantization contract is >=128 -> 255.

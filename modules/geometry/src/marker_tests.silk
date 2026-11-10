@@ -244,7 +244,7 @@ test effect fn markerUnrepresentableArcFailsExplicitly() -> ()
     match &result {
       Result<(), MarkerError | OutOfMemoryError>.Failure { error } => match &error {
         MarkerError problem => problem == MarkerError.NumericLimit
-        OutOfMemoryError problem => {
+        OutOfMemoryError _ => {
           fail OutOfMemoryError {}
         }
       }
@@ -513,7 +513,7 @@ effect fn mappedLimit(data: &[u8], matrix: &Matrix) -> ()
         error
       } => match &error {
         MarkerError problem => problem == MarkerError.NumericLimit
-        OutOfMemoryError problem => {
+        OutOfMemoryError _ => {
           fail OutOfMemoryError {}
         }
       }

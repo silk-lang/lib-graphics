@@ -11,10 +11,10 @@ import pixmap { Pixmap, Rgba8 }
 import layer { BLEND_MULTIPLY }
 import geometry { Affine }
 import filter {
-  Region, BlurPlan, flood, offset, mergeOver, copy, composite, compositePixel, blend, colorMatrix, colorMatrixOf, matrixPixel,
+  Region, BlurPlan, flood, offset, mergeOver, copy, compositePixel, blend, colorMatrixOf, matrixPixel,
   gaussianBlur, toLinear, toSrgb, COMPOSITE_OVER, COMPOSITE_IN, COMPOSITE_OUT, COMPOSITE_ATOP, COMPOSITE_XOR, COMPOSITE_LIGHTER,
   COMPOSITE_ARITHMETIC, MATRIX, SATURATE, HUE_ROTATE, LUMINANCE_TO_ALPHA, morphology, MORPHOLOGY_ERODE, MORPHOLOGY_DILATE,
-  ComponentTransfer, componentTransfer, transferPixel, transferTable, transferDiscrete, transferLinear, transferGamma, tile,
+  ComponentTransfer, transferPixel, transferTable, transferDiscrete, transferLinear, transferGamma, tile,
   Convolution, convolveMatrix, EDGE_DUPLICATE, EDGE_WRAP, EDGE_NONE, displacementMap, displacementTable, CHANNEL_R, CHANNEL_A,
   Turbulence, TurbulenceSettings, turbulence, Light, Lighting, lighting, surfaceNormal, LIGHT_DISTANT, LIGHT_POINT, LIGHT_SPOT,
 }

@@ -3,10 +3,11 @@
 import geometry { Affine }
 import projective { Homography }
 import geometry_error { GeometryError, INVALID_INPUT, NUMERIC_LIMIT }
+// Interface methods resolve through this import; silk#2819 reports it as unused.
+import paint { Shader as _Shader }
 import paint {
   Gradient,
   ImagePattern,
-  Shader,
   Stop,
   RAMP_SIZE,
   SPREAD_PAD,

@@ -6,19 +6,17 @@ import silk.num.f64
 import silk.num.u8
 import silk.num.u32
 import silk.num.usize
-import geometry { Affine, Point, Rect, rectAt }
+import geometry { Affine, Point, rectAt }
 import path { Path }
 import strips { Rasterizer, Coverage, NONZERO }
 import stroke as stroke
 import stroke {
   Stroke,
   Stroker,
-  JOIN_MITER,
   JOIN_MITER_CLIP,
   JOIN_ROUND,
   JOIN_BEVEL,
   JOIN_ARCS,
-  CAP_BUTT,
   CAP_ROUND,
   CAP_SQUARE
 }
@@ -254,7 +252,7 @@ effect fn expectGeometryError<T>(
 ) -> ()
   ! AssertionError<'static> | OutOfMemoryError {
   match &result.* {
-    Result<T, OutOfMemoryError | GeometryError>.Success { value } => {
+    Result<T, OutOfMemoryError | GeometryError>.Success { value: _ } => {
       run Testing.expect(false, "geometry request must fail explicitly")
     }
     Result<T, OutOfMemoryError | GeometryError>.Failure { error } => {
@@ -262,7 +260,7 @@ effect fn expectGeometryError<T>(
         GeometryError rejected => {
           run Testing.expect(rejected.code == code, "geometry error category")
         }
-        OutOfMemoryError allocation => {
+        OutOfMemoryError _ => {
           fail OutOfMemoryError {}
         }
       }

@@ -23,11 +23,12 @@ import silk.num.f64
 import silk.core.effect { Effect }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
 import silk.testing.testing { Testing, AssertionError }
-import svg_tests
-import transform_tests
-import arc_tests
-import bounds_tests
-import marker_tests
+// Imported only to register each module's tests with this root.
+import svg_tests as _svg_tests
+import transform_tests as _transform_tests
+import arc_tests as _arc_tests
+import bounds_tests as _bounds_tests
+import marker_tests as _marker_tests
 
 fn near(a: f64, b: f64) -> bool {
   return f64.abs(a - b) <= 0.000000000001

@@ -220,7 +220,7 @@ effect fn expectDashAccuracy(result: &Result<(), GeometryError | OutOfMemoryErro
       GeometryError e => {
         run Testing.expect(e.code == ACCURACY_LIMIT, "unresolved dash topology refuses accuracy")
       }
-      OutOfMemoryError e => {
+      OutOfMemoryError _ => {
         fail OutOfMemoryError {}
       }
     }
@@ -515,8 +515,8 @@ test effect fn strokeHostRejectsInvalidMapAndHidesNegativeW() -> ()
     |> Effect.provideMut<Allocator>(&mut allocator)
   match &result {
     Result<(), GeometryError | OutOfMemoryError>.Failure { error } => match &error {
-      GeometryError e => {}
-      OutOfMemoryError e => {
+      GeometryError _ => {}
+      OutOfMemoryError _ => {
         fail OutOfMemoryError {}
       }
     }
@@ -667,8 +667,8 @@ test effect fn strokeHostUnboundedBoundsAndUnrepresentableMapsFail() -> ()
     |> Effect.provideMut<Allocator>(&mut allocator)
   match &box {
     Result<StrokeBounds, GeometryError | OutOfMemoryError>.Failure { error } => match &error {
-      GeometryError e => {}
-      OutOfMemoryError e => {
+      GeometryError _ => {}
+      OutOfMemoryError _ => {
         fail OutOfMemoryError {}
       }
     }
@@ -693,8 +693,8 @@ test effect fn strokeHostUnboundedBoundsAndUnrepresentableMapsFail() -> ()
     |> Effect.provideMut<Allocator>(&mut allocator)
   match &result {
     Result<(), GeometryError | OutOfMemoryError>.Failure { error } => match &error {
-      GeometryError e => {}
-      OutOfMemoryError e => {
+      GeometryError _ => {}
+      OutOfMemoryError _ => {
         fail OutOfMemoryError {}
       }
     }

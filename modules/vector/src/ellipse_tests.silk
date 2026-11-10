@@ -91,7 +91,7 @@ effect fn rejects(path: &Path, tolerance: f64, expected: u8) -> bool
   return match &result {
     Result<(), GeometryError | OutOfMemoryError>.Failure { error } => match &error {
       GeometryError value => value.code == expected
-      OutOfMemoryError value => {
+      OutOfMemoryError _ => {
         fail OutOfMemoryError {}
       }
     }

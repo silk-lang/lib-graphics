@@ -6,7 +6,7 @@ import silk.num.u8
 import silk.num.i32
 import silk.num.f64
 import silk.num.u32
-import geometry { Affine, Rect, rectAt }
+import geometry { Affine, rectAt }
 import path { Path }
 import strips { Rasterizer, Coverage, NONZERO }
 import pixmap { Pixmap, Rgba8 }

@@ -2,7 +2,7 @@
 //! coverage that matches a direct `vector` fill.
 import color
 import path_cache { PathCache }
-import primitives { Background, ContentMask, PathSprite }
+import primitives { Background, ContentMask }
 import scene { Scene }
 import scene_tests { rect, window }
 import silk.core.effect { Effect }

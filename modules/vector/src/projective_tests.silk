@@ -7,7 +7,7 @@
 import projective { Homography, HalfPlane }
 import silk.geometry.vector { Vector2 }
 import projective
-import geometry { Point, Rect, Affine, rectAt }
+import geometry { Point, Affine, rectAt }
 import geometry_error { GeometryError, INVALID_INPUT, NUMERIC_LIMIT, ACCURACY_LIMIT }
 import path { Path }
 import flatten { Line }
@@ -420,7 +420,7 @@ test effect fn impossibleOutputAccuracyFailsExplicitly() -> ()
           "precision refusal, never silent subdivision saturation",
         )
       }
-      OutOfMemoryError e => {
+      OutOfMemoryError _ => {
         fail OutOfMemoryError {}
       }
     }
@@ -510,7 +510,7 @@ test effect fn invalidToleranceAndEmptyTargetAreExplicit() -> ()
       GeometryError e => {
         run Testing.expect(e.code == INVALID_INPUT, "zero tolerance is invalid input")
       }
-      OutOfMemoryError e => {
+      OutOfMemoryError _ => {
         fail OutOfMemoryError {}
       }
     }
@@ -956,7 +956,7 @@ test effect fn visibilityPlaneNormalizationRejectsLostCoefficients() -> ()
           "unrepresentable plane normalization is explicit",
         )
       }
-      OutOfMemoryError e => {
+      OutOfMemoryError _ => {
         fail OutOfMemoryError {}
       }
     }
@@ -1044,7 +1044,7 @@ test effect fn edgesAlongClipPlanesStayWithinTolerance() -> ()
       )
         |> Effect.provideMut<Allocator>(&mut allocator)
       match &result {
-        Result<(), GeometryError | OutOfMemoryError>.Success { value } => {
+        Result<(), GeometryError | OutOfMemoryError>.Success { value: _ } => {
           if f64.abs(area(lines.asSlice()) - 1500.0) > 0.01 {
             failures = failures + 1
           }

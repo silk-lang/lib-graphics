@@ -282,7 +282,7 @@ test effect fn projectiveStrokeRejectsUnattainableAccuracy() -> ()
       GeometryError e => {
         run Testing.expect(e.code == ACCURACY_LIMIT, "explicit source-precision refusal")
       }
-      OutOfMemoryError e => {
+      OutOfMemoryError _ => {
         fail OutOfMemoryError {}
       }
     }
@@ -532,7 +532,7 @@ test effect fn projectiveStrokeRejectsUncertifiableProjectionScale() -> ()
           "singular projection has no reciprocal-w certificate",
         )
       }
-      OutOfMemoryError e => {
+      OutOfMemoryError _ => {
         fail OutOfMemoryError {}
       }
     }
@@ -722,7 +722,7 @@ test effect fn unclippedStrokeBoundsRejectActualEyePlaneCrossing() -> ()
           "actual source-stroke crossing has unbounded reference bounds",
         )
       }
-      OutOfMemoryError e => {
+      OutOfMemoryError _ => {
         fail OutOfMemoryError {}
       }
     }
@@ -748,7 +748,7 @@ test effect fn unclippedStrokeBoundsRejectUnattainableAccuracy() -> ()
       GeometryError e => {
         run Testing.expect(e.code == ACCURACY_LIMIT, "stroke-box source precision fails explicitly")
       }
-      OutOfMemoryError e => {
+      OutOfMemoryError _ => {
         fail OutOfMemoryError {}
       }
     }

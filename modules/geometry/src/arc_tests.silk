@@ -25,7 +25,7 @@ fn count(iter: &mut ArcIter) -> usize {
   while true {
     let next = ArcIter.next(&mut iter.*)
     match &next {
-      Option<Segment>.Some { value } => {
+      Option<Segment>.Some { value: _ } => {
         total = total + 1
       }
       Option<Segment>.None => {
@@ -90,7 +90,7 @@ test effect fn quarterArcControlsAndFlags() -> ()
   let reversed = ArcIter.next(&mut reverse)
   let clockwise = match &reversed {
     Option<Segment>.Some { value } => match &value {
-      Segment.CubicTo { control1, control2, to } => control1.y < 0.0 && to.y == -1.0
+      Segment.CubicTo { control1, control2: _, to } => control1.y < 0.0 && to.y == -1.0
       _ => false
     }
     _ => false
@@ -109,7 +109,7 @@ test effect fn radiiCorrectionAndNegativeRadii() -> ()
   let first = ArcIter.next(&mut iter)
   let correct = match &first {
     Option<Segment>.Some { value } => match &value {
-      Segment.CubicTo { control1, control2, to } => near(to.x, 0.0) && near(to.y, -10.0)
+      Segment.CubicTo { control1, control2: _, to } => near(to.x, 0.0) && near(to.y, -10.0)
         && control1.y < 0.0
       _ => false
     }
@@ -147,7 +147,7 @@ test effect fn adaptiveArcPrecisionAndFiniteLimits() -> ()
           "large finite values never generate NaN or infinity",
         )
         match &value {
-          Segment.CubicTo { control1, control2, to } => {
+          Segment.CubicTo { control1: _, control2: _, to } => {
             endpoint = to
           }
           _ => {}
@@ -286,7 +286,7 @@ test effect fn normalizedEllipsePreservesCurvatureAndCorrectedRadii() -> ()
   }
   let corrected = arcs.normalize(Point.new(-10.0, 0.0), arc(1.0, 1.0, 0.0, false, true, 10.0, 0.0))
   match &corrected {
-    NormalizedArc.Ellipse { center, axisX, axisY, sweep, end } => {
+    NormalizedArc.Ellipse { center, axisX, axisY, sweep, end: _ } => {
       run Testing.expect(
         near(center.x, 0.0) && near(center.y, 0.0) && near(math.hypot(axisX.x, axisX.y), 10.0)
           && near(math.hypot(axisY.x, axisY.y), 10.0),

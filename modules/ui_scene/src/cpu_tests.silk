@@ -1,5 +1,5 @@
 //! CPU renderer tests: pixel checks for every primitive kind.
-import atlas.atlas { Atlas, AtlasError, AtlasOptions, AtlasTile, Kind }
+import atlas.atlas { Atlas, AtlasError, AtlasOptions, Kind }
 import color
 import effects { LayerEffects }
 import silk.color.color { ColorSpace, Interpolation }
@@ -22,7 +22,6 @@ import scene { Scene }
 import scroll { ScrollAxis, ScrollLink, ScrollPosition }
 import silk.geometry.rect { Rect }
 import scene_tests { rect, window }
-import silk.collections.list { List }
 import silk.core.effect { Effect }
 import silk.geometry.corners { Corners }
 import silk.geometry.insets { Insets }

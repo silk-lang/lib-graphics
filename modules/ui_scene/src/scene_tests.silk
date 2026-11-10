@@ -3,7 +3,7 @@ import atlas.atlas { AtlasTile, Kind, TextureId, TileId }
 import color
 import silk.color.rgba { Rgba }
 import primitives { Background, ContentMask, GlyphSprite, Isolation, Quad, Shadow, Underline, }
-import scene { Batch, PrimitiveKind, Scene }
+import scene { Batch, Scene }
 import silk.core.effect { Effect }
 import silk.geometry.corners { Corners }
 import silk.geometry.rect { Rect }

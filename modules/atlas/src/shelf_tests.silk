@@ -74,7 +74,7 @@ fn idOf(value: Option<Allocation>) -> AllocId {
 
 fn isLive(packer: &ShelfAllocator, id: AllocId) -> bool {
   return match packer.get(id) {
-    Option<Rect<u32>>.Some { value } => true
+    Option<Rect<u32>>.Some { value: _ } => true
     Option<Rect<u32>>.None => false
   }
 }

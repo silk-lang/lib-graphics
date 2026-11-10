@@ -5,7 +5,7 @@ import silk.mem.allocator { Allocator, OutOfMemoryError }
 import silk.core.effect { Effect }
 import silk.core.result { Result }
 import silk.num.f64
-import geometry { Point, Rect, Affine, rectAt }
+import geometry { Point, Affine, rectAt }
 import geometry_error { GeometryError, INVALID_INPUT, NUMERIC_LIMIT, ACCURACY_LIMIT }
 import path { Path }
 import projective { Homography }
