@@ -11,5 +11,5 @@ vector = { path = "../vector", package = "graphics-vector" }
 atlas = { path = "../atlas", package = "graphics-atlas" }
 ui_scene = { path = "../ui_scene", package = "graphics-ui-scene" }
 gpu_scene = { path = "../gpu_scene", package = "graphics-gpu-scene" }
-webgpu = { git = "https://github.com/silk-lang/lib-native.git", rev = "2e4a8349e2afa7aace8e9bda7d876dce2daf9d69", path = "modules/gpu/webgpu", package = "gpu-webgpu" }
-webgpu_sys = { git = "https://github.com/silk-lang/lib-native.git", rev = "2e4a8349e2afa7aace8e9bda7d876dce2daf9d69", path = "modules/gpu/webgpu/sys", package = "gpu-webgpu-sys" }
+webgpu = { git = "https://github.com/silk-lang/lib-native.git", rev = "e437b1f5e0197787c1de9b9eb700423a82faa7c1", path = "modules/gpu/webgpu", package = "gpu-webgpu" }
+webgpu_sys = { git = "https://github.com/silk-lang/lib-native.git", rev = "e437b1f5e0197787c1de9b9eb700423a82faa7c1", path = "modules/gpu/webgpu/sys", package = "gpu-webgpu-sys" }
