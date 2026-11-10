@@ -26,6 +26,8 @@ jobs:
             ~/.silk
           key: graphics-native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('toolchains.lock.json', '**/silk.toml') }}
       - name: Bootstrap pinned Silk
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           if ! test -x /usr/bin/clang-22 || ! test -x /usr/lib/llvm-22/bin/ld.lld; then
             sudo apt-get update
@@ -48,6 +50,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Bootstrap pinned Silk
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           if ! test -x /usr/bin/clang-22 || ! test -x /usr/lib/llvm-22/bin/ld.lld; then
             sudo apt-get update
@@ -61,6 +65,10 @@ jobs:
         run: silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
       - name: Prepare installed Chromium and native display prerequisites
         run: silk task setup-ci --browser
+      # Ubuntu's AppArmor profile denies unprivileged user namespaces, which Chromium's sandbox
+      # needs. Without this Chromium aborts at startup with "No usable sandbox".
+      - name: Allow the Chromium sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Build wasm and compare the browser renderer
         run: silk task test-browser
   benchmarks:
@@ -70,6 +78,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Bootstrap pinned Silk
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           if ! test -x /usr/bin/clang-22 || ! test -x /usr/lib/llvm-22/bin/ld.lld; then
             sudo apt-get update
