@@ -1,7 +1,7 @@
 [package]
 name = "graphics-ui-renderer-browser"
 version = "0.1.0"
-silk-version = "0.1.0-dev.69+366225ca4dc5"
+silk-version = "0.1.0-dev.72+9c780a04d6ef"
 kind = "executable"
 
 [dependencies]
@@ -11,5 +11,5 @@ ui_scene = { path = "../../ui_scene", package = "graphics-ui-scene" }
 ui_renderer = { path = "..", package = "graphics-ui-renderer" }
 ui_fixtures = { path = "../fixtures", package = "graphics-ui-renderer-fixtures" }
 gpu_scene = { path = "../../gpu_scene", package = "graphics-gpu-scene" }
-webgpu = { git = "https://github.com/silk-lang/lib-native.git", rev = "66c80a2e4afdf43787d9ec63a474d793e3da1194", path = "modules/gpu/webgpu", package = "gpu-webgpu" }
-webgpu_sys = { git = "https://github.com/silk-lang/lib-native.git", rev = "66c80a2e4afdf43787d9ec63a474d793e3da1194", path = "modules/gpu/webgpu/sys", package = "gpu-webgpu-sys" }
+webgpu = { git = "https://github.com/silk-lang/lib-native.git", rev = "8e61059d56691a3ba09e8e783ec6b880f0c5aecf", path = "modules/gpu/webgpu", package = "gpu-webgpu" }
+webgpu_sys = { git = "https://github.com/silk-lang/lib-native.git", rev = "8e61059d56691a3ba09e8e783ec6b880f0c5aecf", path = "modules/gpu/webgpu/sys", package = "gpu-webgpu-sys" }

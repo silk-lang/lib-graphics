@@ -2,7 +2,7 @@
 name = "graphics-ui-scene"
 description = "UI frame primitives ordered and batched for a GPU, with a CPU reference renderer"
 version = "0.1.0"
-silk-version = "0.1.0-dev.69+366225ca4dc5"
+silk-version = "0.1.0-dev.72+9c780a04d6ef"
 kind = "library"
 exports = ["effects", "color", "primitives", "bounds_tree", "scene", "scroll", "path_cache", "cpu"]
 
