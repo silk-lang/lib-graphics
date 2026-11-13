@@ -23,7 +23,7 @@ import silk.num.u8
 import silk.num.usize
 import webgpu.resources as gpu
 import webgpu.resources { BindGroup, Buffer, CommandEncoder, Queue, RenderPipeline, TextureView }
-import webgpu.runtime { Device, GpuError }
+import webgpu.runtime { Device, GpuError, RenderPipelineRequest, createRenderPipelineStart }
 import webgpu.descriptors {
   BindGroupDescriptor,
   BlendComponent,
@@ -126,13 +126,21 @@ fn over() -> BlendComponent {
   return component
 }
 
-effect fn makePipeline(
+/// A pipeline being made: natively on Dawn's worker threads, so the pipelines of a renderer
+/// compile side by side and a frame waits only for the ones it draws with. The browser has no
+/// way to wait for one, so there it is made at once.
+union Making {
+  Started { request: RenderPipelineRequest },
+  Made { pipeline: RenderPipeline },
+}
+
+effect fn startPipeline(
   device: &Device,
   module: &gpu.ShaderModule,
   format: u32,
   blended: bool,
-) -> RenderPipeline
-  ! GpuError {
+) -> Making
+  ! GpuError | OutOfMemoryError {
   let vertex = VertexState.default().withModule(module).withEntryPoint(b"vs")
   let mut blend = BlendState.default()
   blend.setColor(over())
@@ -155,18 +163,89 @@ effect fn makePipeline(
   let mut descriptor = RenderPipelineDescriptor.default().withVertex(vertex).withFragment(&fragment)
   descriptor.setPrimitive(primitive)
   descriptor.setMultisample(multisample)
-  return run gpu.createRenderPipeline(device, &descriptor)
+  static if Intrinsic.targetArchitecture() == "wasm32" {
+    return Making.Made { pipeline: run gpu.createRenderPipeline(device, &descriptor) }
+  } else {
+    return Making.Started { request: run createRenderPipelineStart(device, &descriptor) }
+  }
 }
 
-effect fn makePipelines(device: &Device, modules: &Modules, format: u32) -> Pipelines
+effect fn finishPipeline(making: Making) -> RenderPipeline
   ! GpuError {
+  return match move making {
+    Making.Made { pipeline } => move pipeline
+    Making.Started { request } => {
+      let mut request = move request
+      run request.wait()
+      run request.finish()
+    }
+  }
+}
+
+/// [`Pipelines`] being made.
+struct MakingPipelines {
+  quad: Making,
+  shadow: Making,
+  underline: Making,
+  mono: Making,
+  poly: Making,
+  path: Making,
+}
+
+effect fn startPipelines(device: &Device, modules: &Modules, format: u32) -> MakingPipelines
+  ! GpuError | OutOfMemoryError {
+  return MakingPipelines {
+    quad: run startPipeline(device, &modules.quad, format, true),
+    mono: run startPipeline(device, &modules.mono, format, true),
+    shadow: run startPipeline(device, &modules.shadow, format, true),
+    underline: run startPipeline(device, &modules.underline, format, true),
+    poly: run startPipeline(device, &modules.poly, format, true),
+    path: run startPipeline(device, &modules.path, format, true),
+  }
+}
+
+effect fn finishPipelines(making: MakingPipelines) -> Pipelines
+  ! GpuError {
+  let making = move making
   return Pipelines {
-    quad: run makePipeline(device, &modules.quad, format, true),
-    shadow: run makePipeline(device, &modules.shadow, format, true),
-    underline: run makePipeline(device, &modules.underline, format, true),
-    mono: run makePipeline(device, &modules.mono, format, true),
-    poly: run makePipeline(device, &modules.poly, format, true),
-    path: run makePipeline(device, &modules.path, format, true),
+    quad: run finishPipeline(move making.quad),
+    shadow: run finishPipeline(move making.shadow),
+    underline: run finishPipeline(move making.underline),
+    mono: run finishPipeline(move making.mono),
+    poly: run finishPipeline(move making.poly),
+    path: run finishPipeline(move making.path),
+  }
+}
+
+/// The pipelines of frames with isolated layers: every kind again for the layer textures, and
+/// the layer shader's composite, copy and overlay passes.
+struct Layered {
+  offscreen: Pipelines,
+  composite: RenderPipeline,
+  copy: RenderPipeline,
+  overlay: RenderPipeline,
+}
+
+/// [`Layered`] being made.
+struct MakingLayered {
+  offscreen: MakingPipelines,
+  composite: Making,
+  copy: Making,
+  overlay: Making,
+}
+
+/// The renderer's pipelines, made the first time a frame needs them.
+union Stage<P, M> {
+  Making { making: M },
+  Ready { ready: P },
+  /// Only while a [`Stage.Making`] turns into a [`Stage.Ready`].
+  Empty,
+}
+
+fn readyOf<P, M>(stage: &Stage<P, M>) -> &P {
+  return match &stage.* {
+    Stage<P, M>.Ready { ready } => &ready
+    _ => Intrinsic.trap("ui_renderer: a pipeline was used before it was made")
   }
 }
 
@@ -241,11 +320,8 @@ fn areaOf(sprite: &LayerSprite, width: u32, height: u32) -> Area {
 /// Draws UI scenes onto one target format. Keep one per window and reuse it every frame.
 pub struct UiRenderer {
   format: u32,
-  direct: Pipelines,
-  offscreen: Pipelines,
-  composite: RenderPipeline,
-  copy: RenderPipeline,
-  overlay: RenderPipeline,
+  direct: Stage<Pipelines, MakingPipelines>,
+  layered: Stage<Layered, MakingLayered>,
   text: TextSettings,
   instances: Instances,
   /// The globals uniform and the instance buffers (see GLOBALS .. RAMPS).
@@ -267,7 +343,7 @@ impl UiRenderer {
   /// A renderer for targets of `format` (see [`supportsFormat`]), with GPUI's default text
   /// correction.
   pub effect fn make(device: &Device, format: u32) -> UiRenderer
-    ! GpuError {
+    ! GpuError | OutOfMemoryError {
     let modules = Modules {
       quad: run gpu.createShaderModule(device, b"ui quad", shaders.quad()),
       shadow: run gpu.createShaderModule(device, b"ui shadow", shaders.shadow()),
@@ -277,13 +353,19 @@ impl UiRenderer {
       path: run gpu.createShaderModule(device, b"ui path", shaders.path()),
     }
     let layer = run gpu.createShaderModule(device, b"ui layer", shaders.layer())
+    // Natively all of them compile at once on Dawn's worker threads, the ones a plain frame
+    // draws with first; nothing waits for them here (see `Making`).
+    let direct = run startPipelines(device, &modules, format)
+    let layered = MakingLayered {
+      offscreen: run startPipelines(device, &modules, LAYER_FORMAT),
+      composite: run startPipeline(device, &layer, LAYER_FORMAT, false),
+      copy: run startPipeline(device, &layer, format, false),
+      overlay: run startPipeline(device, &layer, format, true),
+    }
     return UiRenderer {
       format: format,
-      direct: run makePipelines(device, &modules, format),
-      offscreen: run makePipelines(device, &modules, LAYER_FORMAT),
-      composite: run makePipeline(device, &layer, LAYER_FORMAT, false),
-      copy: run makePipeline(device, &layer, format, false),
-      overlay: run makePipeline(device, &layer, format, true),
+      direct: Stage<Pipelines, MakingPipelines>.Making { making: move direct },
+      layered: Stage<Layered, MakingLayered>.Making { making: move layered },
       text: TextSettings.default(),
       instances: Instances.make(),
       buffers: List<Buffer>.make(),
@@ -294,6 +376,39 @@ impl UiRenderer {
       layerHeight: 0,
       newer: List<ScrollPosition>.make(),
       placed: Placements.make(),
+    }
+  }
+
+  /// Waits until the pipelines of frames without isolated layers are made.
+  effect fn readyDirect(self: &mut Self) -> ()
+    ! GpuError {
+    let stage = Intrinsic.replace(self.direct, Stage<Pipelines, MakingPipelines>.Empty)
+    self.direct = match move stage {
+      Stage<Pipelines, MakingPipelines>.Making { making } => Stage<Pipelines, MakingPipelines>.Ready {
+        ready: run finishPipelines(move making),
+      }
+      Stage<Pipelines, MakingPipelines> other => move other
+    }
+  }
+
+  /// Waits until every pipeline is made, those of isolated layers too.
+  effect fn readyAll(self: &mut Self) -> ()
+    ! GpuError {
+    run self.readyDirect()
+    let stage = Intrinsic.replace(self.layered, Stage<Layered, MakingLayered>.Empty)
+    self.layered = match move stage {
+      Stage<Layered, MakingLayered>.Making { making } => {
+        let making = move making
+        Stage<Layered, MakingLayered>.Ready {
+          ready: Layered {
+            offscreen: run finishPipelines(move making.offscreen),
+            composite: run finishPipeline(move making.composite),
+            copy: run finishPipeline(move making.copy),
+            overlay: run finishPipeline(move making.overlay),
+          },
+        }
+      }
+      Stage<Layered, MakingLayered> other => move other
     }
   }
 
@@ -364,11 +479,12 @@ impl UiRenderer {
     run self.upload(device, queue, scene, width, height)
     let mut encoder = run gpu.createCommandEncoder(device, b"ui overlay")
     if scene.layerCount() == 1 || compositesOf(scene, 0) == 0 {
+      run self.readyDirect()
       run self.drawRange(
         device,
         &mut encoder,
         target,
-        &self.direct,
+        readyOf(&self.direct),
         scene,
         atlas,
         0,
@@ -378,6 +494,7 @@ impl UiRenderer {
         clearOf(color.transparent()),
       )
     } else {
+      run self.readyAll()
       run self.reserve(device, queue, scene, width, height)
       let mut slot: usize = 0
       run self.isolated(
@@ -397,7 +514,7 @@ impl UiRenderer {
         device,
         queue,
         &mut encoder,
-        &self.overlay,
+        &readyOf(&self.layered).overlay,
         target,
         slot,
         OP_COPY,
@@ -444,12 +561,13 @@ impl UiRenderer {
     writeU32(&mut globals, 40, f32.toBits(x))
     writeU32(&mut globals, 44, f32.toBits(y))
     queue.writeBuffer(&self.buffers.asSlice()[GLOBALS], 0, &globals)
+    run self.readyDirect()
     let mut encoder = run gpu.createCommandEncoder(device, b"retained images")
     run self.drawRange(
       device,
       &mut encoder,
       target,
-      &self.direct,
+      readyOf(&self.direct),
       scene,
       atlas,
       0,
@@ -488,12 +606,13 @@ impl UiRenderer {
       return
     }
     if scene.layerCount() == 1 || compositesOf(scene, 0) == 0 {
+      run self.readyDirect()
       let count = scene.batches(0).length
       run self.drawRange(
         device,
         &mut encoder,
         target,
-        &self.direct,
+        readyOf(&self.direct),
         scene,
         atlas,
         0,
@@ -504,6 +623,7 @@ impl UiRenderer {
       )
       return
     }
+    run self.readyAll()
     run self.reserve(device, queue, scene, width, height)
     let mut slot: usize = 0
     run self.isolated(
@@ -523,7 +643,7 @@ impl UiRenderer {
       device,
       queue,
       &mut encoder,
-      &self.copy,
+      &readyOf(&self.layered).copy,
       target,
       slot,
       OP_COPY,
@@ -734,7 +854,7 @@ impl UiRenderer {
           device,
           &mut encoder,
           &self.layers.asSlice()[targetIndex].view,
-          &self.offscreen,
+          &readyOf(&self.layered).offscreen,
           scene,
           atlas,
           layer,
@@ -811,7 +931,7 @@ impl UiRenderer {
               device,
               queue,
               &mut encoder,
-              &self.composite,
+              &readyOf(&self.layered).composite,
               &self.layers.asSlice()[targetIndex].view,
               slot.*,
               OP_COMPOSITE,
@@ -839,7 +959,7 @@ impl UiRenderer {
         device,
         &mut encoder,
         &self.layers.asSlice()[targetIndex].view,
-        &self.offscreen,
+        &readyOf(&self.layered).offscreen,
         scene,
         atlas,
         layer,
