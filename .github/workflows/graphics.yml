@@ -35,7 +35,7 @@ jobs:
           fi
           echo "SILK_CLANG=/usr/bin/clang-22" >> "$GITHUB_ENV"
           echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
-          curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.sh | SILK_RELEASE='v0.1.0-dev.72+9c780a04d6ef' sh
+          curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.sh | SILK_RELEASE='v0.1.0-dev.74+205aea3f5b2e' sh
           echo "$HOME/.silk/bin" >> "$GITHUB_PATH"
       - name: Fetch the exact native dependency through Silk
         run: silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
@@ -59,7 +59,7 @@ jobs:
           fi
           echo "SILK_CLANG=/usr/bin/clang-22" >> "$GITHUB_ENV"
           echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
-          curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.sh | SILK_RELEASE='v0.1.0-dev.72+9c780a04d6ef' sh
+          curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.sh | SILK_RELEASE='v0.1.0-dev.74+205aea3f5b2e' sh
           echo "$HOME/.silk/bin" >> "$GITHUB_PATH"
       - name: Fetch the exact native dependency through Silk
         run: silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
@@ -87,7 +87,7 @@ jobs:
           fi
           echo "SILK_CLANG=/usr/bin/clang-22" >> "$GITHUB_ENV"
           echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
-          curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.sh | SILK_RELEASE='v0.1.0-dev.72+9c780a04d6ef' sh
+          curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.sh | SILK_RELEASE='v0.1.0-dev.74+205aea3f5b2e' sh
           echo "$HOME/.silk/bin" >> "$GITHUB_PATH"
       - run: silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
       - run: silk task setup-ci --linux-gpu
