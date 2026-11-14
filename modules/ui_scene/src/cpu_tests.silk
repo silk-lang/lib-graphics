@@ -1,7 +1,7 @@
 //! CPU renderer tests: pixel checks for every primitive kind.
 import atlas.atlas { Atlas, AtlasError, AtlasOptions, Kind }
 import color
-import effects { LayerEffects }
+import effects { LayerEffects, DropShadow, saturate }
 import silk.color.color { ColorSpace, Interpolation }
 import cpu { AtlasPixels, CpuRenderer }
 import path_cache { PathCache }
@@ -458,7 +458,7 @@ effect fn filteredLayers() -> ()
   let mut scene = Scene.make()
   let mut effects = LayerEffects.none()
   effects.blur = 4.0
-  effects.saturation = 0.0
+  effects.color = saturate(0.0)
   drop run scene.pushEffectLayer(
     rect(8.0, 8.0, 64.0, 64.0),
     window(),
@@ -535,6 +535,54 @@ effect fn filteredLayers() -> ()
     y = y + 1
   }
   run Testing.expect(same, "a copied scene draws exactly like the original")
+
+  // A drop shadow draws the layer's alpha, offset and tinted, under the layer.
+  let mut shadowed = Scene.make()
+  effects = LayerEffects.none()
+  effects.shadow = DropShadow { x: 10.0, y: 10.0, sigma: 0.0, color: color.rgba(0x0000ff80) }
+  drop run shadowed.pushEffectLayer(
+    rect(0.0, 0.0, 100.0, 100.0),
+    window(),
+    Isolation { opacity: 1.0, blend: 0 },
+    effects,
+  )
+  drop run shadowed.quad(
+    Quad.fill(rect(20.0, 20.0, 40.0, 40.0), window(), Background.solid(color.rgb(0xff0000))),
+  )
+  run shadowed.popLayer()
+  let cast = run render(&mut shadowed, &pixels)
+  run Testing.expect(is(cast.pixel(40, 40), 255, 0, 0, 255), "content draws over its shadow")
+  run Testing.expect(
+    near(cast.pixel(65, 65).b, 128, 2) && cast.pixel(65, 65).r == 0
+      && near(cast.pixel(65, 65).a, 128, 2),
+    "the shadow is offset and tinted",
+  )
+  run Testing.expect(cast.pixel(25, 15).a == 0, "the shadow does not reach above the content")
+
+  // A mask layer's alpha cuts its layer's content.
+  let mut masked = Scene.make()
+  drop run masked.pushEffectLayer(
+    rect(0.0, 0.0, 100.0, 100.0),
+    window(),
+    Isolation { opacity: 1.0, blend: 0 },
+    LayerEffects.none(),
+  )
+  drop run masked.pushMaskLayer()
+  drop run masked.quad(
+    Quad.fill(rect(0.0, 0.0, 50.0, 100.0), window(), Background.solid(color.rgba(0x00000080))),
+  )
+  run masked.popLayer()
+  drop run masked.quad(
+    Quad.fill(rect(10.0, 10.0, 80.0, 80.0), window(), Background.solid(color.rgb(0x00ff00))),
+  )
+  run masked.popLayer()
+  let cut = run render(&mut masked, &pixels)
+  run Testing.expect(near(cut.pixel(30, 50).g, 128, 2) && near(cut.pixel(30, 50).a, 128, 2), "the mask's alpha scales content")
+  run Testing.expect(cut.pixel(70, 50).a == 0, "content outside the mask is cut")
+  let mut again = Scene.make()
+  run again.replay(&masked, 0, masked.operationCount())
+  let replayed = run render(&mut again, &pixels)
+  run Testing.expect(run sameImages(&cut, &replayed), "scene replay keeps the mask")
 }
 
 test effect fn layersFilterContentAndBackdrop() -> ()

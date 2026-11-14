@@ -47,7 +47,7 @@ import primitives {
   Shadow,
   Underline,
 }
-import scene { PrimitiveKind, Scene }
+import scene { PrimitiveKind, Scene, NO_MASK }
 import scroll { Placements, ScrollPosition }
 
 const PI: f64 = 3.141592653589793
@@ -636,6 +636,41 @@ impl CpuRenderer {
       let mut filtered = run Pixmap.make(target.width(), target.height())
       filtering.colorMatrix(&mut filtered, &offscreen, effects.matrix(), region)
       offscreen = move filtered
+    }
+    if effects.hasShadow() {
+      let mut shadow = run Pixmap.make(target.width(), target.height())
+      let mut moved = run Pixmap.make(target.width(), target.height())
+      if effects.shadow.sigma > 0.0 {
+        let plan = run BlurPlan.make(f32.toF64(effects.shadow.sigma))
+        run filtering.gaussianBlur(&mut moved, &offscreen, &plan, &plan, region)
+        filtering.colorMatrix(&mut shadow, &moved, effects.shadowMatrix(), region)
+      } else {
+        filtering.colorMatrix(&mut shadow, &offscreen, effects.shadowMatrix(), region)
+      }
+      filtering.offset(
+        &mut moved,
+        &shadow,
+        f32.toI32(f32.round(effects.shadow.x)),
+        f32.toI32(f32.round(effects.shadow.y)),
+        region,
+      )
+      filtering.mergeOver(&mut moved, &offscreen, region)
+      offscreen = move moved
+    }
+    let maskLayer = scene.maskOf(sprite.layer)
+    if maskLayer != NO_MASK {
+      let mut mask = run Pixmap.make(target.width(), target.height())
+      run self.drawLayer(scene, placed, maskLayer, pixels, &mut mask)
+      let mut masked = run Pixmap.make(target.width(), target.height())
+      filtering.composite(
+        &mut masked,
+        &offscreen,
+        &mask,
+        filtering.COMPOSITE_IN,
+        [0.0, 0.0, 0.0, 0.0],
+        region,
+      )
+      offscreen = move masked
     }
     if effects.backdropBlur > 0.0 {
       let plan = run BlurPlan.make(f32.toF64(effects.backdropBlur))

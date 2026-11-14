@@ -136,7 +136,7 @@ effect fn compare(browser: &mut cdp.Browser, wasm: &Path) -> ()
   run initialize.append(")")
   let initialized = run cdp.evaluate(&mut browser.*, String.view(&initialize), String.view(&session))
   drop initialized
-  let names = ["cards", "borders", "shadows", "layers", "nested", "gradients", "effects", "scrolled", "transformed", "text ramp"]
+  let names = ["cards", "borders", "shadows", "layers", "nested", "gradients", "effects", "scrolled", "transformed", "masks", "text ramp"]
   let mut failures: usize = 0
   let mut index: usize = 0
   let mut writer = StdoutWriter.make()

@@ -28,7 +28,7 @@ depends on a GPU, so it builds for wasm32 too.
 - `bounds_tree`: `BoundsTree`, a balanced bounding-volume tree that gives a rectangle one more than
   the highest order of anything it overlaps, as GPUI's `BoundsTree`.
 - `scene`: `Scene` with `quad`, `shadow`, `underline`, `glyph`, `image`, `pathCoverage`,
-  `pushLayer`/`pushIsolatedLayer`/`pushEffectLayer`/`pushTransformLayer`/`popLayer`, `replay`, `finish`, and per-layer `batches`.
+  `pushLayer`/`pushIsolatedLayer`/`pushEffectLayer`/`pushTransformLayer`/`pushMaskLayer`/`popLayer`, `replay`, `finish`, and per-layer `batches`.
 - `path_cache`: `PathCache` rasterizes `vector` paths (fills and strokes) into a scene and keeps
   their coverage across frames.
 - `scroll`: retained scroll groups and placements shared by CPU/GPU rendering. Offsets and
@@ -82,11 +82,18 @@ not twice sigma. Expand the layer's paint bounds by three blur standard deviatio
 when its content is blurred. Set `clip`, `radius`, and `shape` (0 rounded rectangle, 1 ellipse)
 to describe the backdrop region separately from those expanded bounds.
 
-`brightness`, `contrast`, and `saturation` are multipliers with neutral value 1. The color matrix
-applies saturation, brightness, then contrast in straight sRGB, after content blur and before
-the layer's opacity and blend mode. Backdrop blur samples the preceding content, clips to the
-specified shape, and mixes with the original backdrop using the layer opacity. Ordinary
-`pushIsolatedLayer` calls keep their existing behavior through neutral effects.
+`color` is a `vector.filter.colorMatrix` matrix in straight sRGB, applied after the content
+blur; `effects` has the Filter Effects matrices (`brightness`, `contrast`, `saturate`,
+`grayscale`, `sepia`, `hueRotate`, `invert`, `opacity`) and `compose` to chain them. `shadow`
+then draws a `drop-shadow()` under the content: its alpha, blurred, offset by whole pixels and
+tinted. A CSS filter list in another order is a stack of effect layers. Backdrop blur samples the
+preceding content, clips to the specified shape, and mixes with the original backdrop using the
+layer opacity. Ordinary `pushIsolatedLayer` calls keep their existing behavior through neutral
+effects.
+
+`pushMaskLayer()`, opened right inside an effect layer, draws a mask: a layer that is never
+composited, whose alpha multiplies the effect layer's filtered content before its opacity and
+blend mode. CSS `clip-path` and `mask-image` paint into it. `maskOf(layer)` finds it.
 
 `pushTransformLayer(bounds, mask, isolation, transform)` draws the group through a projective
 `Matrix3<f32>` (std `silk.geometry.matrix`) from layer pixels to the parent's pixels, as CSS

@@ -49,9 +49,10 @@ import silk.color.rgba { Rgba }
 import ui_scene.color as color
 import gpu_scene.filter { FilterImage, FilterRenderer }
 import vector.filter { BlurPlan, Region }
+import vector.filter as filtering
 import ui_scene.effects { LayerEffects }
 import ui_scene.primitives { LayerSprite }
-import ui_scene.scene { PrimitiveKind, Scene }
+import ui_scene.scene { PrimitiveKind, Scene, NO_MASK }
 import ui_scene.scroll { Placements, ScrollPosition }
 import atlas_textures { GpuAtlas }
 import instances {
@@ -275,7 +276,15 @@ fn depthOf(scene: &Scene, layer: u32) -> u32 {
   let mut deepest: u32 = 0
   let mut i: usize = 0
   while i < sprites.length {
-    let d = 1 + depthOf(scene, sprites[i].layer)
+    let mut d = 1 + depthOf(scene, sprites[i].layer)
+    // A mask draws one level deeper than its layer's content, which it outlives.
+    let mask = scene.maskOf(sprites[i].layer)
+    if mask != NO_MASK {
+      let m = 2 + depthOf(scene, mask)
+      if m > d {
+        d = m
+      }
+    }
     if d > deepest {
       deepest = d
     }
@@ -291,6 +300,10 @@ fn compositesOf(scene: &Scene, layer: u32) -> usize {
   let mut i: usize = 0
   while i < sprites.length {
     total = total + compositesOf(scene, sprites[i].layer)
+    let mask = scene.maskOf(sprites[i].layer)
+    if mask != NO_MASK {
+      total = total + compositesOf(scene, mask)
+    }
     i = i + 1
   }
   return total
@@ -921,6 +934,22 @@ impl UiRenderer {
               height,
               &mut slot,
             )
+            let mask = scene.maskOf(sprite.layer)
+            if mask != NO_MASK {
+              run self.isolated(
+                device,
+                queue,
+                &mut encoder,
+                scene,
+                atlas,
+                mask,
+                depth + 2,
+                transparent,
+                width,
+                height,
+                &mut slot,
+              )
+            }
 
             // The blend reads what is under the layer from a copy.
             let list = self.layers.asSlice()
@@ -957,6 +986,7 @@ impl UiRenderer {
               &mut encoder,
               sprite,
               u32.toUsize(depth) + 2,
+              mask != NO_MASK,
               width,
               height,
             )
@@ -1015,6 +1045,7 @@ impl UiRenderer {
     encoder: &mut CommandEncoder,
     sprite: LayerSprite,
     source: usize,
+    masked: bool,
     width: u32,
     height: u32,
   ) -> usize
@@ -1058,6 +1089,90 @@ impl UiRenderer {
         region,
       )
       content = output
+    }
+    // Drop shadow and mask use the three textures other than the content.
+    let pool = [source, scratch, scratch + 1, scratch + 2]
+    if effects.hasShadow() || masked {
+      let mut free: [usize; 3] = [0; 3]
+      let mut n: usize = 0
+      let mut k: usize = 0
+      while k < 4 {
+        if pool[k] != content {
+          free[n] = pool[k]
+          n = n + 1
+        }
+        k = k + 1
+      }
+      if effects.hasShadow() {
+        let a = free[0]
+        let b = free[1]
+        if effects.shadow.sigma > 0.0 {
+          let plan = run BlurPlan.make(f32.toF64(effects.shadow.sigma))
+          run filter.gaussianBlur(
+            device,
+            queue,
+            &mut encoder,
+            &images[a],
+            &images[content],
+            &images[free[2]],
+            &plan,
+            &plan,
+            region,
+          )
+          run filter.colorMatrix(
+            device,
+            queue,
+            &mut encoder,
+            &images[b],
+            &images[a],
+            effects.shadowMatrix(),
+            region,
+          )
+        } else {
+          run filter.colorMatrix(
+            device,
+            queue,
+            &mut encoder,
+            &images[b],
+            &images[content],
+            effects.shadowMatrix(),
+            region,
+          )
+        }
+        run filter.offset(
+          device,
+          queue,
+          &mut encoder,
+          &images[a],
+          &images[b],
+          f32.toI32(f32.round(effects.shadow.x)),
+          f32.toI32(f32.round(effects.shadow.y)),
+          region,
+        )
+        run filter.mergeOver(device, queue, &mut encoder, &images[b], &images[a], &images[content], region)
+        free[1] = content
+        content = b
+      }
+      if masked {
+        let a = free[0]
+        run filter.composite(
+          device,
+          queue,
+          &mut encoder,
+          &images[a],
+          &images[content],
+          &images[source + 1],
+          filtering.COMPOSITE_IN,
+          [0.0, 0.0, 0.0, 0.0],
+          region,
+        )
+        content = a
+      }
+      // The backdrop blur below writes the last two pool textures.
+      if effects.backdropBlur > 0.0 && content != source && content != scratch {
+        run filter.copy(device, queue, &mut encoder, &images[source], &images[content], region)
+        content = source
+      }
     }
     if effects.backdropBlur > 0.0 {
       let plan = run BlurPlan.make(f32.toF64(effects.backdropBlur))
