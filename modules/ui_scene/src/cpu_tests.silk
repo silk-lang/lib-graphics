@@ -20,6 +20,7 @@ import primitives {
 }
 import scene { Scene }
 import scroll { ScrollAxis, ScrollLink, ScrollPosition }
+import silk.geometry.matrix { Matrix3 }
 import silk.geometry.rect { Rect }
 import scene_tests { rect, window }
 import silk.core.effect { Effect }
@@ -713,4 +714,71 @@ test effect fn scrollGroupsMoveWithoutRepainting() -> ()
   ! AssertionError<'static> | GeometryError | OutOfMemoryError {
   let mut allocator = Allocator.systemAllocatorProvider()
   run scrollGroups() |> Effect.provideMut<Allocator>(&mut allocator)
+}
+
+effect fn transformedQuad(scene: &mut Scene, transform: Matrix3<f32>, local: Rect<f32>) -> ()
+  ! OutOfMemoryError
+  ? &mut Allocator {
+  drop run scene.pushTransformLayer(
+    rect(0.0, 0.0, 100.0, 100.0),
+    window(),
+    Isolation { opacity: 1.0, blend: 0 },
+    transform,
+  )
+  drop run scene.quad(Quad.fill(local, window(), Background.solid(color.rgb(0xff0000))))
+  run scene.popLayer()
+}
+
+effect fn transformedLayers() -> ()
+  ! AssertionError<'static> | GeometryError | OutOfMemoryError
+  ? &mut Allocator {
+  let pixels = AtlasPixels.make()
+
+  // Scaled by 2, then moved by (30, 30): (5, 5) to (15, 15) lands on (40, 40) to (60, 60).
+  let scaled = Matrix3<f32>.new([2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 30.0, 30.0, 1.0])
+  let mut scene = Scene.make()
+  run transformedQuad(&mut scene, scaled, rect(5.0, 5.0, 10.0, 10.0))
+  let image = run render(&mut scene, &pixels)
+  run Testing.expect(is(image.pixel(50, 50), 255, 0, 0, 255), "a scaled layer covers its image")
+  run Testing.expect(is(image.pixel(42, 58), 255, 0, 0, 255), "up to its corners")
+  run Testing.expect(image.pixel(38, 50).a == 0 && image.pixel(62, 50).a == 0, "and no further")
+  run Testing.expect(image.pixel(10, 10).a == 0, "the untransformed spot stays empty")
+
+  // A quarter turn about (50, 50): (x, y) goes to (100 - y, x).
+  let turned = Matrix3<f32>.new([0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 100.0, 0.0, 1.0])
+  let mut turn = Scene.make()
+  run transformedQuad(&mut turn, turned, rect(50.0, 40.0, 30.0, 10.0))
+  let rotated = run render(&mut turn, &pixels)
+  run Testing.expect(is(rotated.pixel(55, 70), 255, 0, 0, 255), "a turned layer stands upright")
+  run Testing.expect(rotated.pixel(70, 45).a == 0, "where it lay is empty")
+
+  // In a scroll group the layer lands moved by the scroll, its content untouched by the clip.
+  let mut grouped = Scene.make()
+  run grouped.setScroll(
+    ScrollPosition { node: 7, x: 0.0, y: 20.0, minX: 0.0, maxX: 0.0, minY: 0.0, maxY: 100.0 },
+  )
+  drop run grouped.pushScrollGroup(
+    ScrollLink { node: 7, x: ScrollAxis.fixed(), y: ScrollAxis.content() },
+    rect(0.0, 0.0, 100.0, 100.0),
+    rect(0.0, 0.0, 100.0, 100.0),
+  )
+  run transformedQuad(&mut grouped, scaled, rect(5.0, 5.0, 10.0, 10.0))
+  run grouped.popScrollGroup()
+  let moved = run render(&mut grouped, &pixels)
+  run Testing.expect(is(moved.pixel(50, 30), 255, 0, 0, 255), "the layer follows the scroll")
+  run Testing.expect(moved.pixel(50, 50).a == 0, "and leaves where it was painted")
+
+  // Replay keeps the transform.
+  let mut again = Scene.make()
+  run transformedQuad(&mut again, turned, rect(50.0, 40.0, 30.0, 10.0))
+  let mut replayed = Scene.make()
+  run replayed.replay(&again, 0, again.operationCount())
+  let replay = run render(&mut replayed, &pixels)
+  run Testing.expect(run sameImages(&replay, &rotated), "a replayed transformed layer draws the same")
+}
+
+test effect fn layersDrawThroughTransforms() -> ()
+  ! AssertionError<'static> | GeometryError | OutOfMemoryError {
+  let mut allocator = Allocator.systemAllocatorProvider()
+  run transformedLayers() |> Effect.provideMut<Allocator>(&mut allocator)
 }

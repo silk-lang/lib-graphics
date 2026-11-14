@@ -33,6 +33,7 @@ import silk.collections.slice { Slice }
 import silk.core.equal { Equal }
 import silk.core.order { Order, Ordering }
 import silk.core.ownership { Copy }
+import silk.geometry.matrix { Matrix3 }
 import silk.geometry.rect { Rect }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
 import silk.num.f32
@@ -55,6 +56,7 @@ import primitives {
   Quad,
   Shadow,
   Underline,
+  mappedBounds,
 }
 
 const NONE: u32 = 4294967295
@@ -572,6 +574,7 @@ struct Push {
   mask: ContentMask,
   isolation: Isolation,
   effects: LayerEffects,
+  transform: Matrix3<f32>,
 }
 
 impl Copy for Push {}
@@ -972,6 +975,7 @@ impl Scene {
         mask: ContentMask.new(bounds),
         isolation: Isolation { opacity: 1.0, blend: 0 },
         effects: LayerEffects.none(),
+        transform: Matrix3<f32>.identity(),
       },
     )
     run self.log(OP_PUSH_PINNED, index)
@@ -1004,32 +1008,76 @@ impl Scene {
   ) -> u32
     ! OutOfMemoryError
     ? &mut Allocator {
+    return run self.openLayer(bounds, mask, isolation, effects, Matrix3<f32>.identity())
+  }
+
+  /// Opens an isolated layer drawn through `transform`, a projective map from layer pixels to
+  /// pixels of the current layer: primitives until the matching [`Scene.popLayer`] are painted
+  /// untransformed, within `bounds`, and their masks are in that untransformed space, outside
+  /// any scroll group around the layer (groups opened inside it nest on their own). The layer
+  /// is ordered and composited where `bounds` lands, cut to `mask` (in the current layer's
+  /// space), with `isolation`. Returns the new layer's index.
+  pub effect fn pushTransformLayer(
+    self: &mut Self,
+    bounds: Rect<f32>,
+    mask: ContentMask,
+    isolation: Isolation,
+    transform: Matrix3<f32>,
+  ) -> u32
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    return run self.openLayer(bounds, mask, isolation, LayerEffects.none(), transform)
+  }
+
+  effect fn openLayer(
+    self: &mut Self,
+    bounds: Rect<f32>,
+    mask: ContentMask,
+    isolation: Isolation,
+    effects: LayerEffects,
+    transform: Matrix3<f32>,
+  ) -> u32
+    ! OutOfMemoryError
+    ? &mut Allocator {
     run self.ensureRoot()
     let pushIndex = usize.toU32(self.pushes.length())
     run self.pushes.append(
-      Push { bounds: bounds, mask: mask, isolation: isolation, effects: effects },
+      Push { bounds: bounds, mask: mask, isolation: isolation, effects: effects, transform: transform },
     )
     run self.log(OP_PUSH_ISOLATED, pushIndex)
-    let visible = clipped(bounds, mask)
-    let target = Rect<f32>.new(
-      f32.floor(visible.xMin),
-      f32.floor(visible.yMin),
-      f32.ceil(visible.xMax),
-      f32.ceil(visible.yMax),
-    )
+    let identity = &transform == &Matrix3<f32>.identity()
+    let visible = if identity {
+      clipped(bounds, mask)
+    } else {
+      mappedBounds(transform, bounds, mask.bounds)
+    }
+    let target = pixelBounds(visible)
     let order = run self.place(target, mask)
     let parent = self.context().layer
     let group = self.group()
     let layer = run self.newLayer()
     if order != 0 && isolation.opacity > 0.0 {
       drop run self.layerData.asMutSlice()[u32.toUsize(parent)].layers.push(
-        LayerSprite { layer: layer, bounds: target, isolation: isolation, effects: effects },
+        LayerSprite {
+          layer: layer,
+          bounds: target,
+          isolation: isolation,
+          effects: effects,
+          transform: transform,
+          source: if identity {
+            target
+          } else {
+            pixelBounds(bounds)
+          },
+        },
         order,
         0,
         group,
       )
     }
-    run self.stack.append(topContext(layer, 0, group, NO_TREE))
+    // A transformed layer's primitives are in its own space, where no scroll group of the
+    // current layer moves or clips them; only the layer sprite follows the group.
+    run self.stack.append(topContext(layer, 0, if identity { group } else { ROOT_GROUP }, NO_TREE))
     return layer
   }
 
@@ -1235,7 +1283,7 @@ impl Scene {
         run self.pushLayer(previous.pushes.get(at).bounds)
       } else if op.kind == OP_PUSH_ISOLATED {
         let push = previous.pushes.get(at)
-        drop run self.pushEffectLayer(push.bounds, push.mask, push.isolation, push.effects)
+        drop run self.openLayer(push.bounds, push.mask, push.isolation, push.effects, push.transform)
       } else if op.kind == OP_PUSH_MASK {
         drop run self.pushMaskLayer()
       } else if op.kind == OP_POP {

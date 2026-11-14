@@ -28,7 +28,7 @@ depends on a GPU, so it builds for wasm32 too.
 - `bounds_tree`: `BoundsTree`, a balanced bounding-volume tree that gives a rectangle one more than
   the highest order of anything it overlaps, as GPUI's `BoundsTree`.
 - `scene`: `Scene` with `quad`, `shadow`, `underline`, `glyph`, `image`, `pathCoverage`,
-  `pushLayer`/`pushIsolatedLayer`/`pushEffectLayer`/`pushMaskLayer`/`popLayer`, `replay`, `finish`, and per-layer `batches`.
+  `pushLayer`/`pushIsolatedLayer`/`pushEffectLayer`/`pushTransformLayer`/`pushMaskLayer`/`popLayer`, `replay`, `finish`, and per-layer `batches`.
 - `path_cache`: `PathCache` rasterizes `vector` paths (fills and strokes) into a scene and keeps
   their coverage across frames.
 - `scroll`: retained scroll groups and placements shared by CPU/GPU rendering. Offsets and
@@ -94,6 +94,15 @@ effects.
 `pushMaskLayer()`, opened right inside an effect layer, draws a mask: a layer that is never
 composited, whose alpha multiplies the effect layer's filtered content before its opacity and
 blend mode. CSS `clip-path` and `mask-image` paint into it. `maskOf(layer)` finds it.
+
+`pushTransformLayer(bounds, mask, isolation, transform)` draws the group through a projective
+`Matrix3<f32>` (std `silk.geometry.matrix`) from layer pixels to the parent's pixels, as CSS
+`transform` does: the content is painted untransformed within `bounds`, with masks in that
+space and outside any scroll group around the layer, and the parent orders and composites the
+mapped bounds cut to `mask`. Renderers resample the layer bilinearly through the inverse, so
+magnified content is softer than content painted at that scale. The layer has no effects of its
+own; nest an effect layer inside it. The layer's texture is target sized, so content painted
+outside the target before the transform is lost.
 
 Ordering bounds round outward to whole pixels so fractional primitives that cover the same
 pixel retain painter order. Sorting coalesces consecutive equal-order/equal-texture runs before

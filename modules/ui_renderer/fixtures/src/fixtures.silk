@@ -4,6 +4,7 @@ import atlas.atlas { Atlas, AtlasError, AtlasOptions, AtlasTile, Kind }
 import silk.collections.list { List }
 import silk.geometry.corners { Corners }
 import silk.geometry.insets { Insets }
+import silk.geometry.matrix { Matrix3 }
 import silk.geometry.rect { Rect }
 import silk.geometry.vector { Vector2 }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
@@ -398,6 +399,56 @@ pub effect fn layers(scene: &mut Scene) -> ()
     drop run scene.quad(q)
     i = i + 1
   }
+  run scene.popLayer()
+}
+
+/// Layers through transforms: a turned card, a scaled pair inside a faded layer, and a card in
+/// perspective, over a gradient.
+pub effect fn transformed(scene: &mut Scene) -> ()
+  ! OutOfMemoryError
+  ? &mut Allocator {
+  drop run scene.quad(
+    Quad.fill(
+      rect(0.0, 0.0, 240.0, 180.0),
+      window(),
+      Background.linear(90.0, color.rgb(0xfef3c7), color.rgb(0xdbeafe)),
+    ),
+  )
+  // 30 degrees about (60, 60).
+  let c: f32 = 0.8660254
+  let s: f32 = 0.5
+  drop run scene.pushTransformLayer(
+    rect(20.0, 30.0, 80.0, 60.0),
+    window(),
+    Isolation { opacity: 1.0, blend: 0 },
+    Matrix3<f32>.new([c, s, 0.0, -s, c, 0.0, 60.0 - c * 60.0 + s * 60.0, 60.0 - s * 60.0 - c * 60.0, 1.0]),
+  )
+  drop run scene.quad(rounded(rect(20.0, 30.0, 80.0, 60.0), 12.0, Background.solid(color.rgb(0xef4444))))
+  drop run scene.quad(rounded(rect(30.0, 40.0, 30.0, 20.0), 6.0, Background.solid(color.rgb(0xffffff))))
+  run scene.popLayer()
+  drop run scene.pushIsolatedLayer(
+    rect(120.0, 10.0, 110.0, 80.0),
+    window(),
+    Isolation { opacity: 0.7, blend: 0 },
+  )
+  drop run scene.pushTransformLayer(
+    rect(130.0, 20.0, 40.0, 30.0),
+    window(),
+    Isolation { opacity: 1.0, blend: 0 },
+    Matrix3<f32>.new([1.75, 0.0, 0.0, 0.0, 1.5, 0.0, -97.5, -10.0, 1.0]),
+  )
+  drop run scene.quad(rounded(rect(130.0, 20.0, 40.0, 30.0), 8.0, Background.solid(color.rgb(0x3b82f6))))
+  run scene.popLayer()
+  run scene.popLayer()
+  // A tilt toward the viewer: the far edge shrinks.
+  drop run scene.pushTransformLayer(
+    rect(40.0, 110.0, 160.0, 60.0),
+    window(),
+    Isolation { opacity: 1.0, blend: 0 },
+    Matrix3<f32>.new([1.0, 0.0, 0.0, 0.0, 1.0, 0.0018, 0.0, 0.0, 0.8]),
+  )
+  drop run scene.quad(rounded(rect(40.0, 110.0, 160.0, 60.0), 10.0, Background.solid(color.rgb(0x14b8a6))))
+  drop run scene.quad(Quad.fill(rect(60.0, 130.0, 120.0, 8.0), window(), Background.solid(color.rgb(0x0f172a))))
   run scene.popLayer()
 }
 
