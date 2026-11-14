@@ -16,6 +16,9 @@
 //! for byte: analytic SDF edges and the erf blur differ from exact area coverage and a separable
 //! Gaussian by a few levels at edges.
 import silk.collections.list { List }
+import silk.core.option { Option }
+import silk.core.ownership { Copy }
+import silk.geometry.rect { Rect }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
 import silk.num.f32
 import silk.num.u32
@@ -293,6 +296,37 @@ fn compositesOf(scene: &Scene, layer: u32) -> usize {
   return total
 }
 
+/// How a composite pass reads a transformed layer: target pixels map back to layer pixels of
+/// `source` through `inverse` (column-major).
+struct Mapping {
+  mapped: bool,
+  inverse: [f32; 9],
+  source: Rect<f32>,
+}
+
+impl Copy for Mapping {}
+
+impl Mapping {
+  fn none() -> Mapping {
+    return Mapping { mapped: false, inverse: [0.0; 9], source: Rect<f32>.new(0.0, 0.0, 0.0, 0.0) }
+  }
+
+  /// `sprite`'s mapping; a transform with no inverse draws nothing, as a flattened box does.
+  fn of(sprite: &LayerSprite) -> Mapping {
+    if !sprite.transformed() {
+      return Mapping.none()
+    }
+    return match sprite.transform.inverse() {
+      Option.Some { value } => Mapping { mapped: true, inverse: value.values, source: sprite.source }
+      Option.None => Mapping {
+        mapped: true,
+        inverse: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0],
+        source: sprite.source,
+      }
+    }
+  }
+}
+
 /// A rectangle of target pixels.
 struct Area {
   x: u32,
@@ -326,7 +360,7 @@ pub struct UiRenderer {
   instances: Instances,
   /// The globals uniform and the instance buffers (see GLOBALS .. RAMPS).
   buffers: List<Buffer>,
-  /// One 48-byte uniform per composite or copy pass of a frame.
+  /// One 128-byte uniform per composite or copy pass of a frame.
   params: List<Buffer>,
   /// 0 is the backdrop copy, 1 + d the target of nesting depth d.
   layers: List<FilterImage>,
@@ -523,6 +557,7 @@ impl UiRenderer {
         1,
         0,
         LayerEffects.none(),
+        Mapping.none(),
         Area { x: 0, y: 0, width: width, height: height },
       )
     }
@@ -652,6 +687,7 @@ impl UiRenderer {
       1,
       0,
       LayerEffects.none(),
+      Mapping.none(),
       Area { x: 0, y: 0, width: width, height: height },
     )
   }
@@ -807,7 +843,7 @@ impl UiRenderer {
       run self.layers.append(move layer)
     }
     let passes = compositesOf(scene, 0) + 1
-    let zeros: [u8; 48] = [0; 48]
+    let zeros: [u8; 128] = [0; 128]
     while self.params.length() < passes {
       let buffer = run storage(
         device,
@@ -944,6 +980,7 @@ impl UiRenderer {
                 0
               },
               sprite.effects,
+              Mapping.of(&sprite),
               move area,
             )
             slot.* = slot.* + 1
@@ -1055,10 +1092,11 @@ impl UiRenderer {
     content: usize,
     backdropContent: usize,
     effects: LayerEffects,
+    mapping: Mapping,
     area: Area,
   ) -> ()
     ! GpuError {
-    let mut header: [u8; 48] = [0; 48]
+    let mut header: [u8; 128] = [0; 128]
     writeU32(&mut header, 0, op)
     writeU32(&mut header, 4, mode)
     writeU32(&mut header, 8, opacity)
@@ -1077,6 +1115,20 @@ impl UiRenderer {
     writeU32(&mut header, 28, f32.toBits(effects.clip.yMax))
     writeU32(&mut header, 32, f32.toBits(effects.radius))
     writeU32(&mut header, 36, effects.shape)
+    if mapping.mapped {
+      let m = mapping.inverse
+      let rows = [m[0], m[3], m[6], 0.0, m[1], m[4], m[7], 0.0, m[2], m[5], m[8], 0.0]
+      let mut i: usize = 0
+      while i < 12 {
+        writeU32(&mut header, 48 + i * 4, f32.toBits(rows[i]))
+        i = i + 1
+      }
+      writeU32(&mut header, 96, f32.toBits(f32.floor(mapping.source.xMin)))
+      writeU32(&mut header, 100, f32.toBits(f32.floor(mapping.source.yMin)))
+      writeU32(&mut header, 104, f32.toBits(f32.ceil(mapping.source.xMax)))
+      writeU32(&mut header, 108, f32.toBits(f32.ceil(mapping.source.yMax)))
+      writeU32(&mut header, 112, 1)
+    }
     let params = &self.params.asSlice()[slot]
     queue.writeBuffer(params, 0, &header)
     let list = self.layers.asSlice()

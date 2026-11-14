@@ -12,7 +12,7 @@ import fixtures
 import fixtures { Tiles, WIDTH, HEIGHT }
 
 /// The number of fixtures.
-pub const COUNT: u32 = 9
+pub const COUNT: u32 = 10
 
 /// How far a fixture may drift from the CPU reference.
 pub struct Tolerance {
@@ -68,6 +68,9 @@ pub effect fn fixture(index: u32) -> Fixture
   } else if index == 7 {
     name = "scrolled"
     run fixtures.scrolled(&mut scene, &mut tiles)
+  } else if index == 8 {
+    name = "transformed"
+    run fixtures.transformed(&mut scene)
   } else {
     name = "text ramp"
     run fixtures.textRamp(&mut scene, &mut tiles)

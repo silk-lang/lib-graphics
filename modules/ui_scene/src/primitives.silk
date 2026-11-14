@@ -10,6 +10,8 @@ import silk.core.equal { Equal }
 import silk.core.ownership { Copy }
 import silk.geometry.corners { Corners }
 import silk.geometry.insets { Insets }
+import silk.geometry.matrix { Matrix3 }
+import silk.geometry.point { Point2 }
 import silk.geometry.rect { Rect }
 import silk.geometry.vector { Vector2 }
 import silk.num.f32
@@ -342,6 +344,50 @@ pub struct LayerSprite {
   pub isolation: Isolation,
   /// Filters applied before this layer is composited.
   pub effects: LayerEffects,
+  /// Where the layer's pixels land: a projective map from a layer pixel `(x, y, 1)` to a target
+  /// pixel. The identity for a layer drawn where it was painted; then `bounds` is also what the
+  /// layer holds. A transformed layer has no `effects`; it holds the pixels of `source`.
+  pub transform: Matrix3<f32>,
+  pub source: Rect<f32>,
 }
 
 impl Copy for LayerSprite {}
+
+impl LayerSprite {
+  /// Whether the layer is drawn through a transform other than the identity.
+  pub fn transformed(self: &Self) -> bool {
+    return &self.transform != &Matrix3<f32>.identity()
+  }
+}
+
+/// The smallest rectangle holding `bounds` mapped through `transform`, cut to `limit`. Where a
+/// corner maps behind the viewer (`w` not positive) the map is unbounded there, so the result
+/// is `limit` itself.
+pub fn mappedBounds(transform: Matrix3<f32>, bounds: Rect<f32>, limit: Rect<f32>) -> Rect<f32> {
+  let xs = [bounds.xMin, bounds.xMax, bounds.xMin, bounds.xMax]
+  let ys = [bounds.yMin, bounds.yMin, bounds.yMax, bounds.yMax]
+  let mut xMin: f32 = 1.0e30
+  let mut yMin: f32 = 1.0e30
+  let mut xMax: f32 = -1.0e30
+  let mut yMax: f32 = -1.0e30
+  let mut i: usize = 0
+  while i < 4 {
+    let h = transform.transformHomogeneous(Point2<f32> { x: xs[i], y: ys[i] })
+    if !(h.z > 0.000001) {
+      return limit
+    }
+    let x = h.x / h.z
+    let y = h.y / h.z
+    xMin = f32.min(xMin, x)
+    yMin = f32.min(yMin, y)
+    xMax = f32.max(xMax, x)
+    yMax = f32.max(yMax, y)
+    i = i + 1
+  }
+  return Rect<f32>.new(
+    f32.max(xMin, limit.xMin),
+    f32.max(yMin, limit.yMin),
+    f32.min(xMax, limit.xMax),
+    f32.min(yMax, limit.yMax),
+  )
+}
