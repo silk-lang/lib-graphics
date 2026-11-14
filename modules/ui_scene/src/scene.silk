@@ -551,6 +551,10 @@ const OP_PUSH_GROUP: u32 = 10
 const OP_POP_GROUP: u32 = 11
 
 const OP_SCROLL: u32 = 12
+const OP_PUSH_MASK: u32 = 13
+
+/// What [`Scene.maskOf`] returns for a layer without a mask.
+pub const NO_MASK: u32 = 4294967295
 
 const NO_TREE: u32 = 4294967295
 
@@ -592,6 +596,8 @@ impl Copy for Context {}
 pub struct Scene {
   layerData: List<LayerData>,
   layersUsed: u32,
+  /// Per layer: the layer whose alpha masks it, or [`NO_MASK`].
+  masks: List<u32>,
   stack: List<Context>,
   operations: List<Operation>,
   pushes: List<Push>,
@@ -663,6 +669,7 @@ impl Scene {
     return Scene {
       layerData: List<LayerData>.make(),
       layersUsed: 0,
+      masks: List<u32>.make(),
       stack: List<Context>.make(),
       operations: List<Operation>.make(),
       pushes: List<Push>.make(),
@@ -692,6 +699,7 @@ impl Scene {
       i = i + 1
     }
     self.layersUsed = other.layersUsed
+    run self.masks.appendSlice(other.masks.asSlice())
     run self.stack.appendSlice(other.stack.asSlice())
     run self.operations.appendSlice(other.operations.asSlice())
     run self.pushes.appendSlice(other.pushes.asSlice())
@@ -712,6 +720,7 @@ impl Scene {
       i = i + 1
     }
     self.layersUsed = 0
+    self.masks.clear()
     self.stack.clear()
     self.operations.clear()
     self.pushes.clear()
@@ -743,6 +752,7 @@ impl Scene {
       run self.layerData.append(LayerData.make())
     }
     self.layersUsed = index + 1
+    run self.masks.append(NO_MASK)
     return index
   }
 
@@ -1023,6 +1033,35 @@ impl Scene {
     return layer
   }
 
+  /// Opens the mask of the isolated layer opened last: primitives until the matching
+  /// [`Scene.popLayer`] are drawn into a layer of their own that is never composited; its alpha
+  /// multiplies the isolated layer's content after its filters and before its opacity and blend.
+  /// Open it right inside [`Scene.pushEffectLayer`], before the layer's content; on the window
+  /// (no isolated layer open) it is ignored. Returns the mask layer's index.
+  pub effect fn pushMaskLayer(self: &mut Self) -> u32
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    run self.ensureRoot()
+    run self.log(OP_PUSH_MASK, 0)
+    let parent = self.context().layer
+    let group = self.group()
+    let layer = run self.newLayer()
+    if parent != 0 {
+      let masks = self.masks.asMutSlice()
+      masks[u32.toUsize(parent)] = layer
+    }
+    run self.stack.append(topContext(layer, 0, group, NO_TREE))
+    return layer
+  }
+
+  /// The layer whose alpha masks `layer` (see [`Scene.pushMaskLayer`]), or [`NO_MASK`].
+  pub fn maskOf(self: &Self, layer: u32) -> u32 {
+    if u32.toUsize(layer) >= self.masks.length() {
+      return NO_MASK
+    }
+    return self.masks.get(u32.toUsize(layer))
+  }
+
   /// Opens a scroll group that follows `link`, inside the current group: primitives until the
   /// matching [`Scene.popScrollGroup`] are painted as with every scroll at 0 and drawn moved by
   /// the link's offset (see the `scroll` module), cut to `clip`. `bounds` holds everywhere they
@@ -1197,6 +1236,8 @@ impl Scene {
       } else if op.kind == OP_PUSH_ISOLATED {
         let push = previous.pushes.get(at)
         drop run self.pushEffectLayer(push.bounds, push.mask, push.isolation, push.effects)
+      } else if op.kind == OP_PUSH_MASK {
+        drop run self.pushMaskLayer()
       } else if op.kind == OP_POP {
         run self.popLayer()
       } else if op.kind == OP_PUSH_GROUP {

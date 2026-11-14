@@ -28,7 +28,8 @@ import ui_scene.primitives {
   Shadow,
   Underline,
 }
-import ui_scene.effects { LayerEffects }
+import ui_scene.effects { LayerEffects, DropShadow }
+import ui_scene.effects as filters
 import ui_scene.scene { Scene }
 import ui_scene.scroll { ScrollAxis, ScrollLink, ScrollPosition }
 import vector.geometry { Affine }
@@ -682,9 +683,10 @@ pub effect fn effects(scene: &mut Scene) -> ()
   )
   let mut settings = LayerEffects.none()
   settings.blur = 5.0
-  settings.saturation = 0.2
-  settings.brightness = 1.2
-  settings.contrast = 0.8
+  settings.color = filters.compose(
+    filters.contrast(0.8),
+    filters.compose(filters.brightness(1.2), filters.saturate(0.2)),
+  )
   drop run scene.pushEffectLayer(
     rect(15.0, 15.0, 90.0, 90.0),
     window(),
@@ -704,6 +706,74 @@ pub effect fn effects(scene: &mut Scene) -> ()
     window(),
     Isolation { opacity: 0.6, blend: 0 },
     settings,
+  )
+  run scene.popLayer()
+}
+
+/// Drop shadows and mask layers, alone and together with blur, blend and backdrop blur.
+pub effect fn masks(scene: &mut Scene) -> ()
+  ! OutOfMemoryError
+  ? &mut Allocator {
+  drop run scene.quad(
+    Quad.fill(rect(0.0, 0.0, 240.0, 180.0), window(), Background.solid(color.rgb(0xf4f0e8))),
+  )
+  drop run scene.quad(
+    Quad.fill(rect(120.0, 0.0, 120.0, 180.0), window(), Background.solid(color.rgb(0x2a3550))),
+  )
+  let mut settings = LayerEffects.none()
+  settings.shadow = DropShadow { x: 6.0, y: 8.0, sigma: 4.0, color: color.rgba(0x000000a0) }
+  drop run scene.pushEffectLayer(
+    rect(0.0, 0.0, 120.0, 90.0),
+    window(),
+    Isolation { opacity: 1.0, blend: 0 },
+    settings,
+  )
+  let mut card = Quad.fill(rect(16.0, 14.0, 70.0, 50.0), window(), Background.solid(color.rgb(0xe05a3a)))
+  card.cornerRadii = Corners<f32>.uniform(10.0)
+  drop run scene.quad(card)
+  run scene.popLayer()
+
+  // A gradient mask over a blurred, blended layer.
+  settings = LayerEffects.none()
+  settings.blur = 2.0
+  drop run scene.pushEffectLayer(
+    rect(100.0, 10.0, 130.0, 80.0),
+    window(),
+    Isolation { opacity: 0.9, blend: 1 },
+    settings,
+  )
+  drop run scene.pushMaskLayer()
+  drop run scene.quad(
+    Quad.fill(
+      rect(100.0, 10.0, 130.0, 80.0),
+      window(),
+      Background.linear(90.0, color.rgba(0x000000ff), color.rgba(0x00000000)),
+    ),
+  )
+  run scene.popLayer()
+  drop run scene.quad(
+    Quad.fill(rect(110.0, 20.0, 110.0, 60.0), window(), Background.solid(color.rgb(0x40c0f0))),
+  )
+  run scene.popLayer()
+
+  // Shadow, mask and backdrop blur on one layer.
+  settings = LayerEffects.none()
+  settings.shadow = DropShadow { x: -4.0, y: 4.0, sigma: 0.0, color: color.rgba(0x30ff60c0) }
+  settings.backdropBlur = 3.0
+  settings.clip = rect(40.0, 100.0, 160.0, 70.0)
+  drop run scene.pushEffectLayer(
+    rect(30.0, 95.0, 180.0, 80.0),
+    window(),
+    Isolation { opacity: 1.0, blend: 0 },
+    settings,
+  )
+  drop run scene.pushMaskLayer()
+  let mut round = Quad.fill(rect(40.0, 100.0, 160.0, 70.0), window(), Background.solid(color.rgb(0x000000)))
+  round.cornerRadii = Corners<f32>.uniform(35.0)
+  drop run scene.quad(round)
+  run scene.popLayer()
+  drop run scene.quad(
+    Quad.fill(rect(60.0, 110.0, 120.0, 40.0), window(), Background.solid(color.rgba(0xffffff80))),
   )
   run scene.popLayer()
 }

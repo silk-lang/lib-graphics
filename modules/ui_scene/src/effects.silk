@@ -1,8 +1,32 @@
 //! Layer filters in device pixels. Use `LayerEffects.none` for an unchanged layer.
 //! Blur uses a Gaussian standard deviation. Color adjustments use straight sRGB channels.
+//! They run in a fixed order: blur, the color matrix, then the drop shadow. Wrap layers to
+//! apply a CSS filter list in another order.
 import silk.num.f32
+import silk.color.rgba { Rgba }
 import silk.core.ownership { Copy }
 import silk.geometry.rect { Rect }
+
+/// The identity of `vector.filter.colorMatrix`: four rows of five, the last column an offset.
+pub const IDENTITY: [f32; 20] = [
+  1.0, 0.0, 0.0, 0.0, 0.0,
+  0.0, 1.0, 0.0, 0.0, 0.0,
+  0.0, 0.0, 1.0, 0.0, 0.0,
+  0.0, 0.0, 0.0, 1.0, 0.0,
+]
+
+/// A CSS `drop-shadow()`: the layer's alpha, blurred, offset and tinted, drawn under it.
+pub struct DropShadow {
+  /// Offset in device pixels.
+  pub x: f32,
+  pub y: f32,
+  /// Gaussian standard deviation in device pixels.
+  pub sigma: f32,
+  /// Straight alpha; a transparent color is no shadow.
+  pub color: Rgba<f32>,
+}
+
+impl Copy for DropShadow {}
 
 /// Filters applied to an isolated layer before its opacity and blend mode.
 pub struct LayerEffects {
@@ -10,12 +34,11 @@ pub struct LayerEffects {
   pub blur: f32,
   /// Gaussian standard deviation for preceding content, in device pixels; zero disables backdrop blur.
   pub backdropBlur: f32,
-  /// Brightness multiplier; one leaves brightness unchanged.
-  pub brightness: f32,
-  /// Contrast multiplier around 0.5; one leaves contrast unchanged.
-  pub contrast: f32,
-  /// Saturation multiplier with Rec. 709 luminance weights; one leaves saturation unchanged.
-  pub saturation: f32,
+  /// A color matrix for `vector.filter.colorMatrix` (straight channels, offsets in 0 ..= 1),
+  /// applied after the blur; [`IDENTITY`] leaves colors unchanged.
+  pub color: [f32; 20],
+  /// Drawn after the color matrix; a transparent color disables it.
+  pub shadow: DropShadow,
   /// Device-pixel bounds of the backdrop clip, before layer blur expands the paint bounds.
   pub clip: Rect<f32>,
   /// Rounded-rectangle clip radius in device pixels; ignored for an ellipse clip.
@@ -32,49 +55,44 @@ impl LayerEffects {
     return LayerEffects {
       blur: 0.0,
       backdropBlur: 0.0,
-      brightness: 1.0,
-      contrast: 1.0,
-      saturation: 1.0,
+      color: IDENTITY,
+      shadow: DropShadow { x: 0.0, y: 0.0, sigma: 0.0, color: Rgba<f32>.new(0.0, 0.0, 0.0, 0.0) },
       clip: Rect<f32>.new(0.0, 0.0, 0.0, 0.0),
       radius: 0.0,
       shape: 0,
     }
   }
 
-  /// Returns whether brightness, contrast, or saturation changes the layer's colors.
+  /// Returns whether the color matrix changes the layer's colors.
   pub fn hasColor(self: &Self) -> bool {
-    return self.brightness != 1.0 || self.contrast != 1.0 || self.saturation != 1.0
+    let mut i: usize = 0
+    while i < 20 {
+      if self.color[i] != IDENTITY[i] {
+        return true
+      }
+      i = i + 1
+    }
+    return false
   }
 
-  /// Returns the saturation, brightness, then contrast transform for `vector.filter.colorMatrix`.
+  /// Returns whether a drop shadow is drawn under the layer.
+  pub fn hasShadow(self: &Self) -> bool {
+    return self.shadow.color.a > 0.0
+  }
+
+  /// Returns the color matrix, for `vector.filter.colorMatrix`.
   pub fn matrix(self: &Self) -> [f32; 20] {
-    let s = self.saturation
-    let k = self.brightness * self.contrast
-    let r = (1.0 - s) * 0.2126 * k
-    let g = (1.0 - s) * 0.7152 * k
-    let b = (1.0 - s) * 0.0722 * k
-    let t = (1.0 - self.contrast) * 0.5
+    return self.color
+  }
+
+  /// Returns the matrix that tints a layer's alpha with the drop shadow color.
+  pub fn shadowMatrix(self: &Self) -> [f32; 20] {
+    let c = self.shadow.color
     return [
-      r + s * k,
-      g,
-      b,
-      0.0,
-      t,
-      r,
-      g + s * k,
-      b,
-      0.0,
-      t,
-      r,
-      g,
-      b + s * k,
-      0.0,
-      t,
-      0.0,
-      0.0,
-      0.0,
-      1.0,
-      0.0,
+      0.0, 0.0, 0.0, 0.0, c.r,
+      0.0, 0.0, 0.0, 0.0, c.g,
+      0.0, 0.0, 0.0, 0.0, c.b,
+      0.0, 0.0, 0.0, c.a, 0.0,
     ]
   }
 
@@ -100,4 +118,105 @@ impl LayerEffects {
     }
     return f32.max(0.0, f32.min(1.0, 0.5 - distance))
   }
+}
+
+/// Returns `outer` applied after `inner`, as one color matrix.
+pub fn compose(outer: [f32; 20], inner: [f32; 20]) -> [f32; 20] {
+  let mut out: [f32; 20] = [0.0; 20]
+  let mut row: usize = 0
+  while row < 4 {
+    let mut column: usize = 0
+    while column < 5 {
+      let mut sum: f32 = if column == 4 {
+        outer[row * 5 + 4]
+      } else {
+        0.0
+      }
+      let mut k: usize = 0
+      while k < 4 {
+        sum = sum + outer[row * 5 + k] * inner[k * 5 + column]
+        k = k + 1
+      }
+      out[row * 5 + column] = sum
+      column = column + 1
+    }
+    row = row + 1
+  }
+  return out
+}
+
+/// `brightness(amount)` from Filter Effects 1: scales the color channels.
+pub fn brightness(amount: f32) -> [f32; 20] {
+  let a = amount
+  return [a, 0.0, 0.0, 0.0, 0.0, 0.0, a, 0.0, 0.0, 0.0, 0.0, 0.0, a, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+}
+
+/// `contrast(amount)`: scales the color channels around one half.
+pub fn contrast(amount: f32) -> [f32; 20] {
+  let a = amount
+  let t = 0.5 - 0.5 * a
+  return [a, 0.0, 0.0, 0.0, t, 0.0, a, 0.0, 0.0, t, 0.0, 0.0, a, 0.0, t, 0.0, 0.0, 0.0, 1.0, 0.0]
+}
+
+/// `saturate(amount)`, with the spec's luminance weights.
+pub fn saturate(amount: f32) -> [f32; 20] {
+  let s = amount
+  return [
+    0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s, 0.0, 0.0,
+    0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s, 0.0, 0.0,
+    0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s, 0.0, 0.0,
+    0.0, 0.0, 0.0, 1.0, 0.0,
+  ]
+}
+
+/// `grayscale(amount)`, amount clamped to `0 ..= 1`.
+pub fn grayscale(amount: f32) -> [f32; 20] {
+  let g = 1.0 - unit(amount)
+  return [
+    0.2126 + 0.7874 * g, 0.7152 - 0.7152 * g, 0.0722 - 0.0722 * g, 0.0, 0.0,
+    0.2126 - 0.2126 * g, 0.7152 + 0.2848 * g, 0.0722 - 0.0722 * g, 0.0, 0.0,
+    0.2126 - 0.2126 * g, 0.7152 - 0.7152 * g, 0.0722 + 0.9278 * g, 0.0, 0.0,
+    0.0, 0.0, 0.0, 1.0, 0.0,
+  ]
+}
+
+/// `sepia(amount)`, amount clamped to `0 ..= 1`.
+pub fn sepia(amount: f32) -> [f32; 20] {
+  let g = 1.0 - unit(amount)
+  return [
+    0.393 + 0.607 * g, 0.769 - 0.769 * g, 0.189 - 0.189 * g, 0.0, 0.0,
+    0.349 - 0.349 * g, 0.686 + 0.314 * g, 0.168 - 0.168 * g, 0.0, 0.0,
+    0.272 - 0.272 * g, 0.534 - 0.534 * g, 0.131 + 0.869 * g, 0.0, 0.0,
+    0.0, 0.0, 0.0, 1.0, 0.0,
+  ]
+}
+
+/// `hue-rotate(angle)`, the angle in degrees.
+pub fn hueRotate(degrees: f32) -> [f32; 20] {
+  let radians = degrees * 0.017453292
+  let c = f32.cos(radians)
+  let s = f32.sin(radians)
+  return [
+    0.213 + c * 0.787 - s * 0.213, 0.715 - c * 0.715 - s * 0.715, 0.072 - c * 0.072 + s * 0.928, 0.0, 0.0,
+    0.213 - c * 0.213 + s * 0.143, 0.715 + c * 0.285 + s * 0.140, 0.072 - c * 0.072 - s * 0.283, 0.0, 0.0,
+    0.213 - c * 0.213 - s * 0.787, 0.715 - c * 0.715 + s * 0.715, 0.072 + c * 0.928 + s * 0.072, 0.0, 0.0,
+    0.0, 0.0, 0.0, 1.0, 0.0,
+  ]
+}
+
+/// `invert(amount)`, amount clamped to `0 ..= 1`.
+pub fn invert(amount: f32) -> [f32; 20] {
+  let a = unit(amount)
+  let k = 1.0 - 2.0 * a
+  return [k, 0.0, 0.0, 0.0, a, 0.0, k, 0.0, 0.0, a, 0.0, 0.0, k, 0.0, a, 0.0, 0.0, 0.0, 1.0, 0.0]
+}
+
+/// `opacity(amount)`, amount clamped to `0 ..= 1`: scales alpha.
+pub fn opacity(amount: f32) -> [f32; 20] {
+  let a = unit(amount)
+  return [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, a, 0.0]
+}
+
+fn unit(value: f32) -> f32 {
+  return f32.max(0.0, f32.min(1.0, value))
 }
