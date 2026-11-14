@@ -136,11 +136,11 @@ effect fn compare(browser: &mut cdp.Browser, wasm: &Path) -> ()
   run initialize.append(")")
   let initialized = run cdp.evaluate(&mut browser.*, String.view(&initialize), String.view(&session))
   drop initialized
-  let names = ["cards", "borders", "shadows", "layers", "nested", "gradients", "effects", "scrolled", "text ramp"]
+  let names = ["cards", "borders", "shadows", "layers", "nested", "gradients", "effects", "scrolled", "masks", "text ramp"]
   let mut failures: usize = 0
   let mut index: usize = 0
   let mut writer = StdoutWriter.make()
-  while index < 18 {
+  while index < 20 {
     let indexValue = Value.Number { value: JsonNumber.Unsigned { value: usize.toU64(index) } }
     let encoded = run cdp.stringify(&indexValue)
     let mut expression = run String.copy("graphicsSample(")
@@ -166,13 +166,13 @@ effect fn compare(browser: &mut cdp.Browser, wasm: &Path) -> ()
       sum = sum + delta
       channel = channel + 1
     }
-    let text = index % 9 == 8
+    let text = index % 10 == 9
     let mean = u64.toF64(sum) / usize.toF64(gpu.length)
     let share = usize.toF64(over) / usize.toF64(gpu.length)
     let maxAllowed: u64 = if text { 1 } else { 48 }
     let ok = maximum <= maxAllowed && share <= (if text { 0.0 } else { 0.006 }) && mean <= (if text { 0.1 } else { 0.5 })
     if !ok { failures = failures + 1 }
-    run Format.format("{status} {name} ({target}): max delta {maximum}, {over} of {channels} channels over 8, mean {mean:.4}\n", &.{ status: if ok { "PASS" } else { "FAIL" }, name: names[index % 9], target: if index < 9 { "rgba8" } else { "bgra8" }, maximum: maximum, over: over, channels: gpu.length, mean: mean }) |> Effect.provideMut<Writer>(&mut writer)
+    run Format.format("{status} {name} ({target}): max delta {maximum}, {over} of {channels} channels over 8, mean {mean:.4}\n", &.{ status: if ok { "PASS" } else { "FAIL" }, name: names[index % 10], target: if index < 10 { "rgba8" } else { "bgra8" }, maximum: maximum, over: over, channels: gpu.length, mean: mean }) |> Effect.provideMut<Writer>(&mut writer)
     index = index + 1
   }
   let errors = browser.errors.asSlice()
