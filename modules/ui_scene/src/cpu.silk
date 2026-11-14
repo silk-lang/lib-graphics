@@ -10,6 +10,7 @@
 //! Content masks clip by pixel area. Gradients are evaluated at pixel centers from a 256-entry
 //! ramp. Sprites sample their atlas tile bilinearly at pixel centers, clamped to the tile.
 import silk.collections.list { List }
+import silk.core.option { Option }
 import silk.core.ownership { Copy }
 import silk.geometry.corners { Corners }
 import silk.geometry.rect { Rect }
@@ -180,6 +181,68 @@ fn clampF(value: f32, low: f32, high: f32) -> f32 {
 
 fn toByte(value: f32) -> u32 {
   return f32.toU32(clampF(value, 0.0, 255.0) + 0.5)
+}
+
+/// Fills `area` of `out` with the pixels of `source` seen through `sprite.transform`: each pixel
+/// center maps back through the inverse and samples `sprite.source` bilinearly, transparent
+/// outside it, which also softens the layer's edges by up to a pixel.
+fn resample(out: &mut Pixmap, source: &Pixmap, sprite: LayerSprite, area: Area) -> () {
+  let inverse = match sprite.transform.inverse() {
+    Option.Some { value } => value
+    Option.None => {
+      return
+    }
+  }
+  let m = inverse.values
+  let width = source.width()
+  let height = source.height()
+  let x0 = f32.max(f32.floor(sprite.source.xMin), 0.0)
+  let y0 = f32.max(f32.floor(sprite.source.yMin), 0.0)
+  let x1 = f32.min(f32.ceil(sprite.source.xMax), u32.toF32(width)) - 1.0
+  let y1 = f32.min(f32.ceil(sprite.source.yMax), u32.toF32(height)) - 1.0
+  let from = source.data()
+  let stride = u32.toUsize(width) * 4
+  let outWidth = u32.toUsize(out.width())
+  let to = out.dataMut()
+  let mut y: u32 = 0
+  while y < area.height {
+    let py = i32.toF32(area.y0 + u32.toI32(y)) + 0.5
+    let mut x: u32 = 0
+    while x < area.width {
+      let px = i32.toF32(area.x0 + u32.toI32(x)) + 0.5
+      let w = m[2] * px + m[5] * py + m[8]
+      if w > 0.000001 {
+        let sx = (m[0] * px + m[3] * py + m[6]) / w - 0.5
+        let sy = (m[1] * px + m[4] * py + m[7]) / w - 0.5
+        let fx = f32.floor(sx)
+        let fy = f32.floor(sy)
+        let tx = sx - fx
+        let ty = sy - fy
+        let at = (u32.toUsize(i32.toU32(area.y0) + y) * outWidth + u32.toUsize(i32.toU32(area.x0) + x)) * 4
+        let mut channel: usize = 0
+        while channel < 4 {
+          let a = texel(from, stride, fx, fy, x0, y0, x1, y1, channel)
+          let b = texel(from, stride, fx + 1.0, fy, x0, y0, x1, y1, channel)
+          let c = texel(from, stride, fx, fy + 1.0, x0, y0, x1, y1, channel)
+          let d = texel(from, stride, fx + 1.0, fy + 1.0, x0, y0, x1, y1, channel)
+          let top = a + (b - a) * tx
+          let bottom = c + (d - c) * tx
+          to[at + channel] = u32.toU8(toByte(top + (bottom - top) * ty))
+          channel = channel + 1
+        }
+      }
+      x = x + 1
+    }
+    y = y + 1
+  }
+}
+
+fn texel(data: &[u8], stride: usize, x: f32, y: f32, x0: f32, y0: f32, x1: f32, y1: f32, channel: usize) -> f32 {
+  if x < x0 || y < y0 || x > x1 || y > y1 {
+    return 0.0
+  }
+  let at = f32.toUsize(y) * stride + f32.toUsize(x) * 4 + channel
+  return u32.toF32(u8.toU32(data[at]))
 }
 
 /// How much of the pixel square at `(x, y)` lies in `rect`, from 0 to 1.
@@ -553,6 +616,11 @@ impl CpuRenderer {
     let area = areaOf(sprite.bounds, sprite.bounds, target.width(), target.height())
     if area.width == 0 {
       return
+    }
+    if sprite.transformed() {
+      let mut mapped = run Pixmap.make(target.width(), target.height())
+      resample(&mut mapped, &offscreen, sprite, area)
+      offscreen = move mapped
     }
     let x0 = i32.toU32(area.x0)
     let y0 = i32.toU32(area.y0)

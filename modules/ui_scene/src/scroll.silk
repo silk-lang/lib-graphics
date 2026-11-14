@@ -16,6 +16,7 @@
 //! primitive of a group by them.
 import silk.collections.list { List }
 import silk.core.ownership { Copy }
+import silk.geometry.matrix { Matrix3 }
 import silk.geometry.rect { Rect }
 import silk.geometry.vector { Vector2 }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
@@ -292,6 +293,26 @@ impl Placements {
     let mut out = s
     out.bounds = cut(moved(s.bounds, p.dx, p.dy), p.clip)
     out.effects.clip = moved(s.effects.clip, p.dx, p.dy)
+    if s.transformed() {
+      // The layer's own primitives are outside every group (see `Scene.pushTransformLayer`):
+      // only where they land moves.
+      let a = s.transform.values
+      out.transform = Matrix3<f32>.new(
+        [
+          a[0] + p.dx * a[2],
+          a[1] + p.dy * a[2],
+          a[2],
+          a[3] + p.dx * a[5],
+          a[4] + p.dy * a[5],
+          a[5],
+          a[6] + p.dx * a[8],
+          a[7] + p.dy * a[8],
+          a[8],
+        ],
+      )
+    } else {
+      out.source = out.bounds
+    }
     return out
   }
 }
