@@ -14,7 +14,10 @@ import generators
 import jpeg_diagnostic
 import support
 import native_tools
-static if Intrinsic.targetOperatingSystem() != "windows" { import browser_tests }
+
+static if Intrinsic.targetOperatingSystem() != "windows" {
+  import browser_tests
+}
 
 union Tasks {
   Check { pub skipNative: bool },
@@ -35,7 +38,14 @@ union BenchmarkTasks {
   Vector,
   Filters,
   UiRenderer,
-  Jpeg { pub inputs: List<String>, pub output: String, pub samples: u32, pub iterations: u32, pub warmup: u32, pub callgrind: bool },
+  Jpeg {
+    pub inputs: List<String>,
+    pub output: String,
+    pub samples: u32,
+    pub iterations: u32,
+    pub warmup: u32,
+    pub callgrind: bool
+  },
 }
 
 union FixtureTasks {
@@ -67,8 +77,14 @@ impl CommandLine for FixtureTasks {
 impl CommandLine for Tasks {
   static fn command() -> Command<Tasks> {
     return Command<Tasks>.make("graphics", "Graphics checks, benchmarks and committed generators")
-      |> Command.option("clang", Opt.about("LLVM clang executable; defaults to SILK_CLANG or PATH") |> Opt.default(""))
-      |> Command.option("runtimeDirectory", Opt.about("Executable directory for runtime DLLs") |> Opt.default(""))
+      |> Command.option(
+        "clang",
+        Opt.about("LLVM clang executable; defaults to SILK_CLANG or PATH") |> Opt.default(""),
+      )
+      |> Command.option(
+        "runtimeDirectory",
+        Opt.about("Executable directory for runtime DLLs") |> Opt.default(""),
+      )
       |> Command.subcommand("benchmark")
       |> Command.subcommand("fixture")
   }
@@ -85,21 +101,41 @@ impl TaskSet for Tasks {
       Tasks.TestUiRenderer => run checks.nativeTest("ui_renderer/tests")
       Tasks.TestBrowser => {
         static if Intrinsic.targetOperatingSystem() == "windows" {
-          run Task.abort("Windows managed Chromium requires silk-lang/silk#3034: the managed subprocess/extra-pipe API is unavailable")
-        } else { run browser_tests.perform() }
+          run Task.abort(
+            "Windows managed Chromium requires silk-lang/silk#3034: the managed subprocess/extra-pipe API is unavailable",
+          )
+        } else {
+          run browser_tests.perform()
+        }
       }
       Tasks.Bench { benchmark } => match move benchmark {
         BenchmarkTasks.Vector => run benchmarks.vector()
         BenchmarkTasks.Filters => run benchmarks.filters()
         BenchmarkTasks.UiRenderer => run checks.rendererBenchmark()
-        BenchmarkTasks.Jpeg { inputs, output, samples, iterations, warmup, callgrind } => run jpeg_diagnostic.perform(inputs.asSlice(), samples, iterations, warmup, callgrind, String.view(&output))
+        BenchmarkTasks.Jpeg {
+          inputs,
+          output,
+          samples,
+          iterations,
+          warmup,
+          callgrind
+        } => run jpeg_diagnostic.perform(
+          inputs.asSlice(),
+          samples,
+          iterations,
+          warmup,
+          callgrind,
+          String.view(&output),
+        )
       }
       Tasks.Fixtures { fixture } => match move fixture {
         FixtureTasks.Png => run codec_fixtures.png()
         FixtureTasks.Jpeg => run codec_fixtures.jpeg()
         FixtureTasks.JpegProgressive => run codec_fixtures.progressive()
         FixtureTasks.JpegMetadata => run codec_fixtures.metadata()
-        FixtureTasks.JpegBenchmark { directory } => run codec_fixtures.benchmark(String.view(&directory))
+        FixtureTasks.JpegBenchmark { directory } => run codec_fixtures.benchmark(
+          String.view(&directory),
+        )
       }
       Tasks.EmbedShaders { check } => run generators.embedShaders(check)
       Tasks.GenerateBrowserExports { check } => run generators.browserExports(check)
@@ -109,9 +145,18 @@ impl TaskSet for Tasks {
         run support.output(b"\n")
       }
       Tasks.SetupCi { browser, linuxGpu } => run native_tools.setup(browser, linuxGpu)
-      Tasks.PrepareWindows { clang, runtimeDirectory, json } => run native_tools.prepareWindows(String.view(&clang), String.view(&runtimeDirectory), json)
+      Tasks.PrepareWindows { clang, runtimeDirectory, json } => run native_tools.prepareWindows(
+        String.view(&clang),
+        String.view(&runtimeDirectory),
+        json,
+      )
     }
   }
 }
 
-pub effect fn main() -> i32 ? &mut HostInput { return run Task.main<Tasks>() }
+pub const COMMANDS: string = Task.commands<Tasks>()
+
+pub effect fn main() -> i32
+  ? &mut HostInput {
+  return run Task.main<Tasks>()
+}
