@@ -2,11 +2,11 @@
 name = "graphics-gpu-scene"
 description = "Draws vector scenes on WebGPU, matching the CPU renderer's output"
 version = "0.1.0"
-silk-version = "0.1.0-dev.74+205aea3f5b2e"
+silk-version = "0.1.0-pipeline.1"
 kind = "library"
 exports = ["scene", "renderer", "filter", "generated_shaders"]
 
 [dependencies]
 vector = { path = "../vector", package = "graphics-vector" }
-webgpu = { git = "https://github.com/silk-lang/lib-native.git", rev = "b40277a5a58d7ddf679cff350e8ee0f02388ef3f", path = "modules/gpu/webgpu", package = "gpu-webgpu" }
-webgpu_sys = { git = "https://github.com/silk-lang/lib-native.git", rev = "b40277a5a58d7ddf679cff350e8ee0f02388ef3f", path = "modules/gpu/webgpu/sys", package = "gpu-webgpu-sys" }
+webgpu = { git = "https://github.com/silk-lang/lib-native.git", rev = "8b411d1f2e4848a6a93d5cf26b488cd52db64069", path = "modules/gpu/webgpu", package = "gpu-webgpu" }
+webgpu_sys = { git = "https://github.com/silk-lang/lib-native.git", rev = "8b411d1f2e4848a6a93d5cf26b488cd52db64069", path = "modules/gpu/webgpu/sys", package = "gpu-webgpu-sys" }
