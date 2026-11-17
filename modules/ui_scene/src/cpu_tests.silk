@@ -279,6 +279,15 @@ effect fn gradients() -> ()
   run copy.replay(&bands, 0, 2)
   let replayed = run render(&mut copy, &pixels)
   run Testing.expect(replayed.pixel(45, 5).r == 255 && replayed.pixel(55, 5).b == 255, "stops: replayed")
+
+  // Copied for the render thread, the stops come along too, also into a reused scene.
+  let mut handed = Scene.make()
+  run handed.copyFrom(&round)
+  run handed.copyFrom(&bands)
+  let mut drawn = run Pixmap.make(100, 100)
+  let mut cpu = CpuRenderer.make()
+  run cpu.draw(&handed, &pixels, &mut drawn)
+  run Testing.expect(drawn.pixel(45, 5).r == 255 && drawn.pixel(55, 5).b == 255, "stops: copied")
 }
 
 fn stops(
