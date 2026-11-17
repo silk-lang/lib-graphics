@@ -66,10 +66,11 @@ costs no pass of its own:
 - Plain layers of one nesting depth that do not overlap share a texture, a **page**. A page is
   one pass, drawn before the layers that hold its layers, deepest first. Each layer draws within
   its own pixels of the page (a scissor).
-- A page's texture spans only the bounds of its layers (rounded up to 128 pixels), and a layer
+- A page's texture spans only the bounds of its layers (rounded up to 64 pixels), and a layer
   far from a page's others starts a page of its own, so pages cost memory for what they hold,
-  not for the window. A page that holds a layer composited the slow way, or a backdrop blur, is
-  target-sized.
+  not for the window. Each frame the largest page takes the smallest free texture that fits
+  (at most twice its size), and a texture no page used for 120 frames is dropped. A page that
+  holds a backdrop blur is target-sized.
 - The parent's pass then blits each layer where it comes in the parent's batches, blended
   source-over by the pipeline. A mask layer is one more layer on another page; the blit keeps
   the layer inside its alpha.
@@ -80,20 +81,22 @@ benchmark is that frame, 128 ms before pages and 37 ms with them on lavapipe.
 
 Every other layer (a blend mode, blur, a color filter, a drop shadow, backdrop blur, or one past
 the page limit) is composited the slow way: its content into a pooled texture, then a blend pass
-that reads a copy of what is under it. That pass interrupts the parent's pass, and each of these
-passes loads and stores a target-sized texture, so keep such layers few. When the root holds
-one, the frame is drawn into an RGBA8 texture and copied to the target at the end. A plain layer
-that holds a backdrop blur takes a page alone, so the blur reads only that layer.
+that reads a copy of what is under it. That pass interrupts the parent's pass. The pooled
+textures lie over the composite's own pixels: where the layer lands (and, transformed, its
+source), and for a backdrop blur that area grown by the blur's reach (3 sigma and a little),
+since the blur reads nothing further. So the pool is as large as the largest composite of the
+frame, not the window. When the root holds a slow layer, the frame is drawn into one
+target-sized RGBA8 texture and copied to the target at the end. A plain layer that holds a
+backdrop blur takes a page alone, so the blur reads only that layer.
 
 ### Layer effects and atlas uploads
 
 `Scene.pushEffectLayer` carries the shared [`LayerEffects`](../ui_scene/src/effects.silk)
 settings into the renderer. Gaussian blur and color matrices reuse `gpu_scene.FilterRenderer`;
 filter scratch textures and uniforms are pooled between frames. A scene without isolated layers
-keeps the direct rendering path. Backdrop blur currently copies and filters the full viewport.
-Filter surfaces are viewport sized, so source pixels beyond their edges cannot contribute to
-blur. Cost scales with filtered area and layer count; these changes do not make large stacks of
-blurred layers free.
+keeps the direct rendering path. Backdrop blur copies and filters the layer's area grown by the
+blur's reach; source pixels beyond the viewport cannot contribute to blur. Cost scales with
+filtered area and layer count; these changes do not make large stacks of blurred layers free.
 
 `GpuAtlas.texture(index)` exposes a borrowed texture for external uploads. Call `sync` first,
 write only the allocated tile, and provide premultiplied pixels for color tiles. Color atlas

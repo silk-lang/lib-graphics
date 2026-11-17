@@ -6,13 +6,15 @@
 // A transformed layer (`mapped` set) is sampled bilinearly through `inverse` (rows), which maps a
 // target pixel back to a layer pixel, within the layer pixels `source` (x0, y0, x1, y1).
 // Positions are scene pixels; a page holds only part of the scene, so `origins` gives where pixel
-// (0, 0) of the output (xy) and of the layer's page (zw) lie, and `maskOrigin` of the mask's page.
+// (0, 0) of the output (xy) and of the layer's page or texture (zw) lie, `maskOrigin` of the
+// mask's page, and `backdropOrigin` of a composite's backdrop copy and its blur.
 struct Params {
   op: u32, mode: u32, opacity: u32, backdropEnabled: u32, clip: vec4f, radius: f32, shape: u32, maskOrigin: vec2u,
   inverse0: vec4f, inverse1: vec4f, inverse2: vec4f, source: vec4f, mapped: u32, masked: u32, rounded: u32, pad2: u32,
   // The content mask the layer lands in; its rounded corners clip the layer (radii tl, tr, br, bl).
   maskBounds: vec4f, maskRadii: vec4f,
   origins: vec4u,
+  backdropOrigin: vec2u, pad3: vec2u,
 }
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var backdrop: texture_2d<f32>;
@@ -95,7 +97,6 @@ fn faded(s: vec4u) -> vec4u {
 @fragment fn fs(@builtin(position) output: vec4f) -> @location(0) vec4f {
   let position = vec4f(output.xy + vec2f(params.origins.xy), output.zw);
   let pixel = vec2u(position.xy);
-  let local = vec2u(output.xy);
   var content = vec4u(0u);
   if params.mapped != 0u {
     content = mappedBytes(position.xy);
@@ -109,7 +110,8 @@ fn faded(s: vec4u) -> vec4u {
     if params.opacity == 255u { return vec4f(content) / 255.0; }
     return vec4f(faded(content)) / 255.0;
   }
-  var b = bytes(backdrop, local);
+  let under = pixel - params.backdropOrigin;
+  var b = bytes(backdrop, under);
   if params.backdropEnabled != 0u {
     let halfSize = (params.clip.zw - params.clip.xy) * 0.5;
     let p = position.xy - (params.clip.xy + halfSize);
@@ -121,7 +123,7 @@ fn faded(s: vec4u) -> vec4u {
       distance = (length(normalized) - 1.0) * min(halfSize.x, halfSize.y);
     }
     let coverage = clamp(0.5 - distance, 0.0, 1.0) * f32(params.opacity) / 255.0;
-    b = vec4u(round(mix(vec4f(b), vec4f(bytes(filteredBackdrop, local)), coverage)));
+    b = vec4u(round(mix(vec4f(b), vec4f(bytes(filteredBackdrop, under)), coverage)));
   }
   if params.opacity == 0u || content.w == 0u { return vec4f(b) / 255.0; }
   var s = content;
