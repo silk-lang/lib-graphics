@@ -37,7 +37,7 @@ struct Varying { @builtin(position) position: vec4f, @location(0) @interpolate(f
 @fragment fn fs(v: Varying) -> @location(0) vec4f {
   let r = runs[v.index];
   let path = paths[r.path];
-  let p = v.position.xy;
+  let p = v.position.xy + globals.origin.xy;
   let clip = areaIn(path.mask, p) * cornerCoverage(path.mask, path.maskRadii, p);
   if clip <= 0.0 { discard; }
   var alpha = 1.0;

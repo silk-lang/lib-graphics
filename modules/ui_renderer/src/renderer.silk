@@ -114,9 +114,21 @@ const OP_COPY: u32 = 1
 
 const OP_BLIT: u32 = 2
 
-/// Pages are target-sized, so a frame takes at most this many; layers past it are drawn the slow
-/// way.
+/// A frame takes at most this many pages; layers past it are drawn the slow way.
 const MAX_PAGES: usize = 12
+
+/// Page textures grow in steps of this many pixels, so that layers moving a little each frame
+/// keep their texture.
+const PAGE_STEP: u32 = 128
+
+/// Frames a page texture may stay much larger than its layers need before it is replaced.
+const SHRINK_FRAMES: u32 = 120
+
+/// Bytes of `shaders/layer.wgsl`'s `Params`.
+const PARAMS_BYTES: usize = 176
+
+/// Bytes of `shaders/common.wgsl`'s `Globals`.
+const GLOBALS_BYTES: usize = 64
 
 const NO_PAGE: u32 = 0xffffffff
 
@@ -435,6 +447,39 @@ fn areaOf(sprite: &LayerSprite, width: u32, height: u32) -> Area {
 
 impl Copy for Area {}
 
+/// The smallest area holding `a` and `b`; an empty area holds nothing.
+fn spanning(a: &Area, b: &Area) -> Area {
+  if a.width == 0 || a.height == 0 {
+    return b.*
+  }
+  if b.width == 0 || b.height == 0 {
+    return a.*
+  }
+  let x0 = smaller(a.x, b.x)
+  let y0 = smaller(a.y, b.y)
+  let x1 = larger(a.x + a.width, b.x + b.width)
+  let y1 = larger(a.y + a.height, b.y + b.height)
+  return Area { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+}
+
+fn sizeOf(area: &Area) -> u64 {
+  return u32.toU64(area.width) * u32.toU64(area.height)
+}
+
+fn roundUp(value: u32) -> u32 {
+  return (value + PAGE_STEP - 1) / PAGE_STEP * PAGE_STEP
+}
+
+/// Limits `pass` to the scene pixels `area` of a surface whose pixel (0, 0) is `origin`'s.
+fn scissor(pass: &mut RenderPassEncoder<'_>, area: &Area, origin: &Area) -> () {
+  let local = intersect(area, origin)
+  if local.width == 0 {
+    pass.setScissorRect(0, 0, 0, 0)
+    return
+  }
+  pass.setScissorRect(local.x - origin.x, local.y - origin.y, local.width, local.height)
+}
+
 fn larger(a: u32, b: u32) -> u32 {
   return if a > b {
     a
@@ -569,10 +614,23 @@ pub struct UiRenderer {
   filters: List<FilterRenderer>,
   layerWidth: u32,
   layerHeight: u32,
-  /// The textures plain layers share (see `plan`).
+  /// The textures plain layers share (see `plan`). A page covers only the pixels its layers
+  /// claim, `pageAreas` in scene pixels, unless it is in `fullPages`.
   pages: List<FilterImage>,
+  /// Where each page of this frame lies in the scene: its origin and its texture's size.
+  pageAreas: List<Area>,
+  /// The globals uniform of each page, whose `origin` is the page's.
+  pageGlobals: List<Buffer>,
+  /// Pages of this frame that must be target-sized at the origin: they hold a layer composited
+  /// the slow way, which reads and writes whole targets, or a backdrop blur.
+  fullPages: u32,
   /// The nesting depth of the layers of each page of this frame.
   pageDepths: List<u32>,
+  /// What the layers of each page of this frame claim, together (see `pageFor`).
+  pageBounds: List<Area>,
+  /// For each page, how many frames in a row its texture has been more than four times larger
+  /// than it needs; past [`SHRINK_FRAMES`] it gets a smaller one.
+  pageSlack: List<u32>,
   /// The plain layers of this frame.
   plans: List<Planned>,
   /// For each layer of the scene: its index in `plans`, [`NOT_PLANNED`] or [`PLANNED_EMPTY`].
@@ -624,7 +682,12 @@ impl UiRenderer {
       layerWidth: 0,
       layerHeight: 0,
       pages: List<FilterImage>.make(),
+      pageAreas: List<Area>.make(),
+      pageGlobals: List<Buffer>.make(),
+      fullPages: 0,
       pageDepths: List<u32>.make(),
+      pageBounds: List<Area>.make(),
+      pageSlack: List<u32>.make(),
       plans: List<Planned>.make(),
       assigned: List<u32>.make(),
       rootSlow: false,
@@ -835,7 +898,7 @@ impl UiRenderer {
     if refresh {
       run self.upload(device, queue, scene, width, height)
     }
-    let mut globals: [u8; 48] = [0; 48]
+    let mut globals: [u8; 64] = [0; 64]
     writeU32(&mut globals, 0, f32.toBits(u32.toF32(width)))
     writeU32(&mut globals, 4, f32.toBits(u32.toF32(height)))
     writeU32(&mut globals, 32, f32.toBits(scale))
@@ -972,7 +1035,7 @@ impl UiRenderer {
     ? &mut Allocator {
     run self.placed.resolve(scene.scrollGroups(), scene.scrolls(), self.newer.asSlice())
     run self.instances.pack(scene, &self.placed)
-    let mut globals: [u8; 48] = [0; 48]
+    let mut globals: [u8; 64] = [0; 64]
     writeU32(&mut globals, 0, f32.toBits(u32.toF32(width)))
     writeU32(&mut globals, 4, f32.toBits(u32.toF32(height)))
     writeU32(&mut globals, 8, f32.toBits(self.text.contrast))
@@ -1103,6 +1166,7 @@ impl UiRenderer {
     if width != self.layerWidth || height != self.layerHeight {
       self.layers.clear()
       self.pages.clear()
+      self.pageGlobals.clear()
       self.layerWidth = width
       self.layerHeight = height
     }
@@ -1113,16 +1177,13 @@ impl UiRenderer {
         run self.layers.append(move layer)
       }
     }
-    while self.pages.length() < self.pageDepths.length() {
-      let page = run FilterImage.make(device, width, height)
-      run self.pages.append(move page)
-    }
+    run self.sizePages(device, queue, width, height)
     // A frame that needed many pages does not keep them all.
     while self.pages.length() > self.pageDepths.length() + 2 {
       drop self.pages.pop()
     }
     let passes = compositesOf(scene, 0) + 1
-    let zeros: [u8; 160] = [0; 160]
+    let zeros: [u8; PARAMS_BYTES] = [0; PARAMS_BYTES]
     while self.params.length() < passes {
       let buffer = run storage(
         device,
@@ -1143,11 +1204,109 @@ impl UiRenderer {
     ? &mut Allocator {
     self.plans.clear()
     self.pageDepths.clear()
+    self.pageBounds.clear()
     self.assigned.clear()
     run self.assigned.appendRepeated(NOT_PLANNED, u32.toUsize(scene.layerCount()))
     self.rootSlow = false
     self.anySlow = false
-    run self.planLayer(scene, 0, 0, Area { x: 0, y: 0, width: width, height: height }, width, height)
+    self.fullPages = 0
+    run self.planLayer(scene, 0, 0, NO_PAGE, Area { x: 0, y: 0, width: width, height: height }, width, height)
+  }
+
+  /// Gives every page of this frame a texture and a place: the bounds of what its layers claim,
+  /// rounded up to [`PAGE_STEP`], or the whole target for a page in `fullPages`. A page keeps its
+  /// texture while it is large enough, unless it has been four times too large for
+  /// [`SHRINK_FRAMES`] frames.
+  effect fn sizePages(self: &mut Self, device: &Device, queue: &Queue, width: u32, height: u32) -> ()
+    ! GpuError | OutOfMemoryError
+    ? &mut Allocator {
+    self.pageAreas.clear()
+    let mut page: usize = 0
+    while page < self.pageDepths.length() {
+      let full = self.fullPages & u32.shiftLeft(1, usize.toU32(page)) != 0
+      let bounds = if full {
+        Area { x: 0, y: 0, width: width, height: height }
+      } else {
+        self.pageBounds.get(page)
+      }
+      let needWidth = if full { width } else { smaller(roundUp(larger(bounds.width, 1)), width) }
+      let needHeight = if full { height } else { smaller(roundUp(larger(bounds.height, 1)), height) }
+      if page == self.pageSlack.length() {
+        run self.pageSlack.append(0)
+      }
+      if page < self.pages.length() {
+        let image = &self.pages.asSlice()[page]
+        let large = image.width >= needWidth && image.height >= needHeight
+          && (!full || image.width == width && image.height == height)
+        let oversized = u32.toU64(image.width) * u32.toU64(image.height)
+          > 4 * u32.toU64(needWidth) * u32.toU64(needHeight)
+        let slack = self.pageSlack.asMutSlice()
+        slack[page] = if large && oversized { slack[page] + 1 } else { 0 }
+        let replace = !large || slack[page] > SHRINK_FRAMES
+        drop slack
+        if replace {
+          let slack = self.pageSlack.asMutSlice()
+          slack[page] = 0
+          drop slack
+          let made = run FilterImage.make(device, needWidth, needHeight)
+          let pages = self.pages.asMutSlice()
+          pages[page] = move made
+        }
+      } else {
+        let made = run FilterImage.make(device, needWidth, needHeight)
+        run self.pages.append(move made)
+      }
+      let image = &self.pages.asSlice()[page]
+      // The texture lies over the bounds and inside the target.
+      let area = Area {
+        x: smaller(bounds.x, width - image.width),
+        y: smaller(bounds.y, height - image.height),
+        width: image.width,
+        height: image.height,
+      }
+      run self.pageAreas.append(area)
+      if page == self.pageGlobals.length() {
+        let zeros: [u8; GLOBALS_BYTES] = [0; GLOBALS_BYTES]
+        let buffer = run storage(device, queue, b"ui page globals", &zeros, flags.WGPUBufferUsage_Uniform)
+        run self.pageGlobals.append(move buffer)
+      }
+      let globals = self.globalsFor(area)
+      queue.writeBuffer(&self.pageGlobals.asSlice()[page], 0, &globals)
+      page = page + 1
+    }
+  }
+
+  /// The globals of a pass onto a surface of `area`'s size whose pixel (0, 0) is `area`'s origin.
+  fn globalsFor(self: &Self, area: Area) -> [u8; GLOBALS_BYTES] {
+    let mut globals: [u8; GLOBALS_BYTES] = [0; GLOBALS_BYTES]
+    writeU32(&mut globals, 0, f32.toBits(u32.toF32(area.width)))
+    writeU32(&mut globals, 4, f32.toBits(u32.toF32(area.height)))
+    writeU32(&mut globals, 8, f32.toBits(self.text.contrast))
+    let ratios = self.text.gammaRatios()
+    let mut r: usize = 0
+    while r < 4 {
+      writeU32(&mut globals, 16 + r * 4, f32.toBits(ratios[r]))
+      r = r + 1
+    }
+    writeU32(&mut globals, 32, f32.toBits(1.0))
+    writeU32(&mut globals, 48, f32.toBits(u32.toF32(area.x)))
+    writeU32(&mut globals, 52, f32.toBits(u32.toF32(area.y)))
+    return globals
+  }
+
+  /// Where `surface` lies in the scene: a page's area, else the target at the origin.
+  fn originOf(self: &Self, surface: Surface) -> Area {
+    return match surface {
+      Surface.Page { index } => self.pageAreas.get(index)
+      _ => Area { x: 0, y: 0, width: self.layerWidth, height: self.layerHeight }
+    }
+  }
+
+  fn globalsOf(self: &Self, surface: Surface) -> &Buffer {
+    return match surface {
+      Surface.Page { index } => &self.pageGlobals.asSlice()[index]
+      _ => &self.buffers.asSlice()[GLOBALS]
+    }
   }
 
   effect fn planLayer(
@@ -1155,6 +1314,8 @@ impl UiRenderer {
     scene: &Scene,
     layer: u32,
     depth: u32,
+    /// The page `layer` is drawn on, or [`NO_PAGE`] for the root.
+    onPage: u32,
     within: Area,
     width: u32,
     height: u32,
@@ -1213,9 +1374,12 @@ impl UiRenderer {
                 let assigned = self.assigned.asMutSlice()
                 assigned[u32.toUsize(sprite.layer)] = usize.toU32(index)
                 drop assigned
-                run self.planLayer(scene, sprite.layer, depth + 1, rect, width, height)
+                if claim.width == width && claim.height == height {
+                  self.fullPages = self.fullPages | u32.shiftLeft(1, page)
+                }
+                run self.planLayer(scene, sprite.layer, depth + 1, page, rect, width, height)
                 if mask != NO_MASK {
-                  run self.planLayer(scene, mask, depth + 1, rect, width, height)
+                  run self.planLayer(scene, mask, depth + 1, own.mask, rect, width, height)
                 }
               }
             }
@@ -1225,6 +1389,9 @@ impl UiRenderer {
           self.anySlow = true
           if layer == 0 {
             self.rootSlow = true
+          }
+          if onPage != NO_PAGE {
+            self.fullPages = self.fullPages | u32.shiftLeft(1, onPage)
           }
         }
       }
@@ -1246,18 +1413,38 @@ impl UiRenderer {
       }
       i = i + 1
     }
+    // Of the pages it may share, the one whose bounds it grows least; a page of its own when that
+    // would leave more of the page empty than the layer fills, since a page's texture spans its
+    // bounds.
     let depths = self.pageDepths.asSlice()
+    let mut best = NO_PAGE
+    let mut bestWaste: u64 = 0
     let mut page: usize = 0
     while page < depths.length {
       if depths[page] == depth && taken & u32.shiftLeft(1, usize.toU32(page)) == 0 {
-        return usize.toU32(page)
+        let bounds = self.pageBounds.get(page)
+        let grown = sizeOf(&spanning(&bounds, claim))
+        let used = sizeOf(&bounds) + sizeOf(claim)
+        let waste = if grown > used { grown - used } else { 0 }
+        if best == NO_PAGE || waste < bestWaste {
+          best = usize.toU32(page)
+          bestWaste = waste
+        }
       }
       page = page + 1
+    }
+    if best != NO_PAGE && (bestWaste <= sizeOf(claim) || page == MAX_PAGES) {
+      let index = u32.toUsize(best)
+      let grown = spanning(&self.pageBounds.get(index), claim)
+      let bounds = self.pageBounds.asMutSlice()
+      bounds[index] = grown
+      return best
     }
     if page == MAX_PAGES {
       return NO_PAGE
     }
     run self.pageDepths.append(depth)
+    run self.pageBounds.append(claim.*)
     return usize.toU32(page)
   }
 
@@ -1354,6 +1541,7 @@ impl UiRenderer {
   ) -> ()
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
+    let origin = self.originOf(surface)
     let mut pass = run beginPass(&mut encoder, self.viewOf(surface, target), load, clear)
     let count = if page == NO_PAGE {
       1
@@ -1370,7 +1558,7 @@ impl UiRenderer {
       }
       if item.page == page {
         let rect = item.rect
-        pass.setScissorRect(rect.x, rect.y, rect.width, rect.height)
+        scissor(&mut pass, &rect, &origin)
         let batches = scene.batches(item.layer)
         let mut from: usize = 0
         let mut b: usize = 0
@@ -1384,6 +1572,7 @@ impl UiRenderer {
             run self.drawBatches(
               device,
               &mut pass,
+              self.globalsOf(surface),
               self.pipelinesOf(surface),
               scene,
               atlas,
@@ -1400,7 +1589,7 @@ impl UiRenderer {
               let plan = self.assigned.get(u32.toUsize(sprite.layer))
               if area.width > 0 && plan != PLANNED_EMPTY {
                 if plan != NOT_PLANNED {
-                  pass.setScissorRect(area.x, area.y, area.width, area.height)
+                  scissor(&mut pass, &area, &origin)
                   run self.blit(
                     device,
                     queue,
@@ -1410,7 +1599,7 @@ impl UiRenderer {
                     sprite,
                     self.plans.get(u32.toUsize(plan)),
                   )
-                  pass.setScissorRect(rect.x, rect.y, rect.width, rect.height)
+                  scissor(&mut pass, &rect, &origin)
                 } else {
                   pass.end()
                   run self.slow(
@@ -1427,7 +1616,7 @@ impl UiRenderer {
                     &mut slot,
                   )
                   pass = run beginPass(&mut encoder, self.viewOf(surface, target), true, clear)
-                  pass.setScissorRect(rect.x, rect.y, rect.width, rect.height)
+                  scissor(&mut pass, &rect, &origin)
                 }
                 slot.* = slot.* + 1
               }
@@ -1440,6 +1629,7 @@ impl UiRenderer {
         run self.drawBatches(
           device,
           &mut pass,
+          self.globalsOf(surface),
           self.pipelinesOf(surface),
           scene,
           atlas,
@@ -1469,13 +1659,22 @@ impl UiRenderer {
     if opacity == 0 {
       return
     }
-    let mut header: [u8; 160] = [0; 160]
+    let mut header: [u8; PARAMS_BYTES] = [0; PARAMS_BYTES]
     writeU32(&mut header, 0, OP_BLIT)
     writeU32(&mut header, 8, opacity)
     writeMapping(&mut header, &Mapping.of(&sprite))
     if plan.mask != NO_PAGE {
       writeU32(&mut header, 116, 1)
+      let maskArea = self.pageAreas.get(u32.toUsize(plan.mask))
+      writeU32(&mut header, 40, maskArea.x)
+      writeU32(&mut header, 44, maskArea.y)
     }
+    let output = self.originOf(surface)
+    let contentArea = self.pageAreas.get(u32.toUsize(plan.page))
+    writeU32(&mut header, 160, output.x)
+    writeU32(&mut header, 164, output.y)
+    writeU32(&mut header, 168, contentArea.x)
+    writeU32(&mut header, 172, contentArea.y)
     let params = &self.params.asSlice()[slot]
     queue.writeBuffer(params, 0, &header)
     let pipeline = match surface {
@@ -1937,7 +2136,7 @@ impl UiRenderer {
     area: Area,
   ) -> ()
     ! GpuError {
-    let mut header: [u8; 160] = [0; 160]
+    let mut header: [u8; PARAMS_BYTES] = [0; PARAMS_BYTES]
     writeU32(&mut header, 0, op)
     writeU32(&mut header, 4, mode)
     writeU32(&mut header, 8, opacity)
@@ -2004,7 +2203,7 @@ impl UiRenderer {
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
     let mut pass = run beginPass(&mut encoder, view, load, clear)
-    run self.drawBatches(device, &mut pass, pipelines, scene, atlas, layer, from, to)
+    run self.drawBatches(device, &mut pass, &self.buffers.asSlice()[GLOBALS], pipelines, scene, atlas, layer, from, to)
     pass.end()
   }
 
@@ -2013,6 +2212,7 @@ impl UiRenderer {
     self: &Self,
     device: &Device,
     pass: &mut RenderPassEncoder<'_>,
+    globals: &Buffer,
     pipelines: &Pipelines,
     scene: &Scene,
     atlas: &GpuAtlas,
@@ -2040,7 +2240,7 @@ impl UiRenderer {
       match batch.kind {
         PrimitiveKind.Shadow => {
           let layout = run pipelines.shadow.getBindGroupLayout(0)
-          let entries = [entry(0, &b[GLOBALS]), entry(1, &b[SHADOWS])]
+          let entries = [entry(0, globals), entry(1, &b[SHADOWS])]
           let group = run gpu.createBindGroup(
             device,
             &BindGroupDescriptor.default().withLayout(&layout).withEntries(&entries),
@@ -2052,7 +2252,7 @@ impl UiRenderer {
         }
         PrimitiveKind.Quad => {
           let layout = run pipelines.quad.getBindGroupLayout(0)
-          let entries = [entry(0, &b[GLOBALS]), entry(1, &b[QUADS]), entry(7, &b[RAMPS])]
+          let entries = [entry(0, globals), entry(1, &b[QUADS]), entry(7, &b[RAMPS])]
           let group = run gpu.createBindGroup(
             device,
             &BindGroupDescriptor.default().withLayout(&layout).withEntries(&entries),
@@ -2064,7 +2264,7 @@ impl UiRenderer {
         }
         PrimitiveKind.Underline => {
           let layout = run pipelines.underline.getBindGroupLayout(0)
-          let entries = [entry(0, &b[GLOBALS]), entry(1, &b[UNDERLINES])]
+          let entries = [entry(0, globals), entry(1, &b[UNDERLINES])]
           let group = run gpu.createBindGroup(
             device,
             &BindGroupDescriptor.default().withLayout(&layout).withEntries(&entries),
@@ -2078,7 +2278,7 @@ impl UiRenderer {
           if u32.toUsize(batch.texture) < atlas.textureCount() {
             let layout = run pipelines.mono.getBindGroupLayout(0)
             let entries = [
-              entry(0, &b[GLOBALS]),
+              entry(0, globals),
               entry(1, &b[GLYPHS]),
               textureEntry(2, atlas.view(u32.toUsize(batch.texture))),
             ]
@@ -2101,7 +2301,7 @@ impl UiRenderer {
             if slot == imageTextures.length() {
               let layout = run pipelines.poly.getBindGroupLayout(0)
               let entries = [
-                entry(0, &b[GLOBALS]),
+                entry(0, globals),
                 entry(1, &b[IMAGES]),
                 textureEntry(2, atlas.view(u32.toUsize(batch.texture))),
               ]
@@ -2125,7 +2325,7 @@ impl UiRenderer {
           if range[1] > range[0] {
             let layout = run pipelines.path.getBindGroupLayout(0)
             let entries = [
-              entry(0, &b[GLOBALS]),
+              entry(0, globals),
               entry(1, &b[RUNS]),
               entry(2, &b[PATHS]),
               entry(3, &b[ALPHAS]),
