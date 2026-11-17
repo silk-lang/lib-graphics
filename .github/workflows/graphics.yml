@@ -35,7 +35,7 @@ jobs:
           fi
           echo "SILK_CLANG=/usr/bin/clang-22" >> "$GITHUB_ENV"
           echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
-          curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/45b9e51824caef8cca871303c1ce19587da0533b/install.sh | SILK_RELEASE='v0.1.0-pipeline.1' sh
+          curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/45b9e51824caef8cca871303c1ce19587da0533b/install.sh | SILK_RELEASE='v0.1.0-dev.85+45b9e51824ca' sh
           echo "$HOME/.silk/bin" >> "$GITHUB_PATH"
       - name: Fetch the exact native dependency through Silk
         run: silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
@@ -59,7 +59,7 @@ jobs:
           fi
           echo "SILK_CLANG=/usr/bin/clang-22" >> "$GITHUB_ENV"
           echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
-          curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/45b9e51824caef8cca871303c1ce19587da0533b/install.sh | SILK_RELEASE='v0.1.0-pipeline.1' sh
+          curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/45b9e51824caef8cca871303c1ce19587da0533b/install.sh | SILK_RELEASE='v0.1.0-dev.85+45b9e51824ca' sh
           echo "$HOME/.silk/bin" >> "$GITHUB_PATH"
       - name: Fetch the exact native dependency through Silk
         run: silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
@@ -87,7 +87,7 @@ jobs:
           fi
           echo "SILK_CLANG=/usr/bin/clang-22" >> "$GITHUB_ENV"
           echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
-          curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/45b9e51824caef8cca871303c1ce19587da0533b/install.sh | SILK_RELEASE='v0.1.0-pipeline.1' sh
+          curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/45b9e51824caef8cca871303c1ce19587da0533b/install.sh | SILK_RELEASE='v0.1.0-dev.85+45b9e51824ca' sh
           echo "$HOME/.silk/bin" >> "$GITHUB_PATH"
       - run: silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
       - run: silk task setup-ci --linux-gpu
