@@ -15,6 +15,9 @@ import primitives {
   Isolation,
   LinearGradient,
   Quad,
+  GradientShape,
+  StopRange,
+  StopsGradient,
   Shadow,
   Underline,
 }
@@ -222,6 +225,84 @@ effect fn gradients() -> ()
     near(mid.r, 140, 4) && near(mid.g, 83, 6) && near(mid.b, 162, 4),
     "Oklab interpolation",
   )
+
+  // A radial ellipse 40 wide and 20 tall at (60, 50), black at the center, white on the ellipse.
+  let mut round = Scene.make()
+  let grey = run round.colorStops(
+    &[
+      ColorStop { color: color.rgb(0x000000), offset: 0.0 },
+      ColorStop { color: color.rgb(0xffffff), offset: 1.0 },
+    ],
+  )
+  drop run round.quad(Quad.fill(rect(10.0, 0.0, 90.0, 100.0), window(), stops(GradientShape.Radial, 0.0, 50.0, 50.0, 40.0, 20.0, false, grey)))
+  let r = run render(&mut round, &pixels)
+  run Testing.expect(r.pixel(60, 50).r < 8, "radial: offset 0 at the center")
+  run Testing.expect(
+    near(r.pixel(80, 50).r, 128, 4) && near(r.pixel(60, 60).r, 128, 6),
+    "radial: halfway out along both radii",
+  )
+  run Testing.expect(r.pixel(15, 5).r > 252, "radial: pads past the ellipse")
+
+  // A conic from 90deg (pointing right) around (50, 50): black there, a quarter at the bottom.
+  let mut wheel = Scene.make()
+  let range = run wheel.colorStops(
+    &[
+      ColorStop { color: color.rgb(0x000000), offset: 0.0 },
+      ColorStop { color: color.rgb(0xffffff), offset: 1.0 },
+    ],
+  )
+  drop run wheel.quad(Quad.fill(rect(0.0, 0.0, 100.0, 100.0), window(), stops(GradientShape.Conic, 90.0, 50.0, 50.0, 0.0, 0.0, false, range)))
+  let c = run render(&mut wheel, &pixels)
+  run Testing.expect(near(c.pixel(49, 90).r, 64, 4), "conic: a quarter turn clockwise at the bottom")
+  run Testing.expect(near(c.pixel(10, 49).r, 128, 4), "conic: half a turn at the left")
+  run Testing.expect(near(c.pixel(50, 10).r, 191, 4), "conic: three quarters at the top")
+
+  // Hard edges and repeats: red 0 to 10, blue 10 to 20, repeating along a 100px line.
+  let mut bands = Scene.make()
+  let hard = run bands.colorStops(
+    &[
+      ColorStop { color: color.rgb(0xff0000), offset: 0.0 },
+      ColorStop { color: color.rgb(0xff0000), offset: 0.1 },
+      ColorStop { color: color.rgb(0x0000ff), offset: 0.1 },
+      ColorStop { color: color.rgb(0x0000ff), offset: 0.2 },
+    ],
+  )
+  drop run bands.quad(Quad.fill(rect(0.0, 0.0, 100.0, 10.0), window(), stops(GradientShape.Linear, 90.0, 0.0, 0.0, 0.0, 0.0, true, hard)))
+  drop run bands.quad(Quad.fill(rect(0.0, 20.0, 100.0, 10.0), window(), stops(GradientShape.Linear, 90.0, 0.0, 0.0, 0.0, 0.0, false, hard)))
+  let l = run render(&mut bands, &pixels)
+  run Testing.expect(l.pixel(9, 5).r == 255 && l.pixel(10, 5).b == 255, "stops: a hard edge between pixels")
+  run Testing.expect(l.pixel(45, 5).r == 255 && l.pixel(55, 5).b == 255, "stops: repeating")
+  run Testing.expect(l.pixel(65, 25).b == 255 && l.pixel(65, 25).r == 0, "stops: padding")
+
+  // Replayed into another scene, the stops come along.
+  let mut copy = Scene.make()
+  run copy.replay(&bands, 0, 2)
+  let replayed = run render(&mut copy, &pixels)
+  run Testing.expect(replayed.pixel(45, 5).r == 255 && replayed.pixel(55, 5).b == 255, "stops: replayed")
+}
+
+fn stops(
+  shape: GradientShape,
+  angle: f32,
+  cx: f32,
+  cy: f32,
+  rx: f32,
+  ry: f32,
+  repeating: bool,
+  range: StopRange,
+) -> Background {
+  return Background.Stops {
+    gradient: StopsGradient {
+      shape: shape,
+      angle: angle,
+      centerX: cx,
+      centerY: cy,
+      radiusX: rx,
+      radiusY: ry,
+      repeating: repeating,
+      stops: range,
+    },
+  }
 }
 
 test effect fn linearGradients() -> ()

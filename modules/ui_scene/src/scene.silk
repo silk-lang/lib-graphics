@@ -47,6 +47,8 @@ import scroll { ScrollGroup, ScrollLink, ScrollPosition, ScrollAxis, ROOT_GROUP 
 import color
 import primitives {
   Background,
+  ColorStop,
+  StopRange,
   ContentMask,
   GlyphSprite,
   ImageSprite,
@@ -615,6 +617,8 @@ pub struct Scene {
   scrollPositions: List<ScrollPosition>,
   /// Every [`Scene.setScroll`] call, for replay.
   scrollLog: List<ScrollPosition>,
+  /// The stops of every [`StopsGradient`] in the frame.
+  stops: List<ColorStop>,
 }
 
 fn maxU32(a: u32, b: u32) -> u32 {
@@ -684,6 +688,7 @@ impl Scene {
       treesUsed: 0,
       scrollPositions: List<ScrollPosition>.make(),
       scrollLog: List<ScrollPosition>.make(),
+      stops: List<ColorStop>.make(),
     }
   }
 
@@ -734,6 +739,35 @@ impl Scene {
     self.treesUsed = 0
     self.scrollPositions.clear()
     self.scrollLog.clear()
+    self.stops.clear()
+  }
+
+  /// Keeps `stops` for a [`StopsGradient`] of this frame and returns where they are.
+  pub effect fn colorStops(self: &mut Self, stops: &[ColorStop]) -> StopRange
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    let start = usize.toU32(self.stops.length())
+    run self.stops.appendSlice(stops)
+    return StopRange { start: start, count: usize.toU32(stops.length) }
+  }
+
+  /// The stops of `range`.
+  pub fn stopsOf(self: &Self, range: StopRange) -> &[ColorStop] {
+    return Slice.view<ColorStop>(self.stops.asSlice(), u32.toUsize(range.start), u32.toUsize(range.count))
+  }
+
+  /// `paint` from scene `previous` with its stops, if any, kept in this scene.
+  effect fn adopt(self: &mut Self, previous: &Scene, paint: Background) -> Background
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    return match paint {
+      Background.Stops { gradient } => {
+        let mut moved = gradient
+        moved.stops = run self.colorStops(previous.stopsOf(gradient.stops))
+        Background.Stops { gradient: moved }
+      }
+      _ => paint
+    }
   }
 
   effect fn ensureRoot(self: &mut Self) -> ()
@@ -1265,9 +1299,12 @@ impl Scene {
       if op.kind == 0 {
         drop run self.shadow(data.shadows.added.get(at))
       } else if op.kind == 1 {
-        drop run self.quad(data.quads.added.get(at))
+        let mut q = data.quads.added.get(at)
+        q.background = run self.adopt(previous, q.background)
+        drop run self.quad(q)
       } else if op.kind == 2 {
-        let p = data.paths.added.get(at)
+        let mut p = data.paths.added.get(at)
+        p.paint = run self.adopt(previous, p.paint)
         let s0 = u32.toUsize(p.stripStart)
         let f0 = u32.toUsize(p.fillStart)
         let strips = Slice.view<Strip>(previous.strips.asSlice(), s0, u32.toUsize(p.stripCount))
