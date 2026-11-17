@@ -12,13 +12,14 @@ import silk.num.f64
 import silk.num.i32
 import silk.num.u32
 import silk.num.usize
-import silk.color.color { ColorSpace }
+import silk.color.color { ColorSpace, Interpolation }
 import silk.color.rgba { Rgba }
 import ui_scene.color
 import ui_scene.primitives {
   Background,
   BorderStyle,
-  LinearGradient,
+  ColorStop,
+  GradientShape,
   GlyphSprite,
   ImageSprite,
   PathSprite,
@@ -105,16 +106,20 @@ effect fn pushCorners(bytes: &mut List<u8>, c: Corners<f32>) -> ()
   run push4(&mut bytes, c.topLeft, c.topRight, c.bottomRight, c.bottomLeft)
 }
 
-/// Appends the 256-entry ramp of `gradient` to `ramps`, sampled with the same `color.mix` the
-/// CPU reference uses, and returns its index.
-effect fn pushRamp(ramps: &mut List<u8>, gradient: LinearGradient) -> u32
+/// Appends the 256-entry ramp from `from` to `to` to `ramps`, sampled with the same `color.mix`
+/// the CPU reference uses, and returns its index.
+effect fn pushRamp(ramps: &mut List<u8>, from: ColorStop, to: ColorStop, interpolation: Interpolation) -> u32
   ! OutOfMemoryError
   ? &mut Allocator {
+  // Stops of other gradients may share the buffer: start on a whole ramp.
+  while ramps.length() % (RAMP_LENGTH * 4) != 0 {
+    run pushU32(&mut ramps, 0)
+  }
   let index = usize.toU32(ramps.length() / (RAMP_LENGTH * 4))
   let mut i: usize = 0
   while i < RAMP_LENGTH {
     let t = usize.toF32(i) / 255.0
-    let c = color.mix(gradient.from.color, gradient.to.color, t, gradient.interpolation)
+    let c = color.mix(from.color, to.color, t, interpolation)
     run pushU32(&mut ramps, pack(color.toPremultipliedRgba8(c)))
     i = i + 1
   }
@@ -125,6 +130,7 @@ effect fn pushRamp(ramps: &mut List<u8>, gradient: LinearGradient) -> u32
 /// Gradients interpolated in sRGB mix in the shader; any other interpolation (Oklab, Oklch, a
 /// hue arc, a wide gamut space, ...) gets a ramp in `ramps`, so it matches `silk.color` exactly.
 effect fn pushPaint(
+  scene: &Scene,
   bytes: &mut List<u8>,
   ramps: &mut List<u8>,
   paint: Background,
@@ -158,29 +164,91 @@ effect fn pushPaint(
       let w = box.xMax - box.xMin
       let h = box.yMax - box.yMin
       let half = f32.max((f32.abs(w * dx) + f32.abs(h * dy)) * 0.5, 0.000001)
-      let native = match gradient.interpolation.space {
-        ColorSpace.Srgb => true
-        _ => false
-      }
-      if native {
-        run pushU32(&mut bytes, 1)
-        run pushU32(&mut bytes, 0)
-      } else {
-        let ramp = run pushRamp(&mut ramps, gradient)
-        run pushU32(&mut bytes, 2)
-        run pushU32(&mut bytes, ramp)
-      }
-      run pushU32(&mut bytes, dash)
-      run pushU32(&mut bytes, 0)
-      run pushColor(&mut bytes, gradient.from.color)
-      run pushColor(&mut bytes, gradient.to.color)
+      run pushGradientHead(&mut bytes, &mut ramps, gradient.from, gradient.to, gradient.interpolation, dash)
       run push4(&mut bytes, (box.xMin + box.xMax) * 0.5, (box.yMin + box.yMax) * 0.5, dx, dy)
       run push4(&mut bytes, half, gradient.from.offset, gradient.to.offset, 0.0)
+    }
+    Background.Stops { gradient: g } => {
+      // The stops go into `ramps` as five words each: the offset, then the straight color.
+      let list = scene.stopsOf(g.stops)
+      let start = usize.toU32(ramps.length() / 4)
+      let mut i: usize = 0
+      while i < list.length {
+        run push4(&mut ramps, list[i].offset, list[i].color.r, list[i].color.g, list[i].color.b)
+        run pushF32(&mut ramps, list[i].color.a)
+        i = i + 1
+      }
+      let shape: u32 = match g.shape {
+        GradientShape.Linear => 0
+        GradientShape.Radial => 1
+        GradientShape.Conic => 2
+      }
+      run pushU32(&mut bytes, 3)
+      run pushU32(&mut bytes, start)
+      run pushU32(&mut bytes, dash)
+      run pushU32(&mut bytes, shape)
+      run push4(&mut bytes, usize.toF32(list.length), if g.repeating { 1.0 } else { 0.0 }, 0.0, 0.0)
+      run push4(&mut bytes, 0.0, 0.0, 0.0, 0.0)
+      match g.shape {
+        GradientShape.Linear => {
+          let radians = f32.toF64(g.angle) * PI / 180.0
+          let dx = f64.toF32(f64.sin(radians))
+          let dy = f64.toF32(-f64.cos(radians))
+          let w = box.xMax - box.xMin
+          let h = box.yMax - box.yMin
+          let half = f32.max((f32.abs(w * dx) + f32.abs(h * dy)) * 0.5, 0.000001)
+          run push4(&mut bytes, (box.xMin + box.xMax) * 0.5, (box.yMin + box.yMax) * 0.5, dx, dy)
+          run push4(&mut bytes, half, 0.0, 0.0, 0.0)
+        }
+        GradientShape.Radial => {
+          run push4(
+            &mut bytes,
+            box.xMin + g.centerX,
+            box.yMin + g.centerY,
+            1.0 / f32.max(g.radiusX, 0.000001),
+            1.0 / f32.max(g.radiusY, 0.000001),
+          )
+          run push4(&mut bytes, 1.0, 0.0, 0.0, 0.0)
+        }
+        GradientShape.Conic => {
+          run push4(&mut bytes, box.xMin + g.centerX, box.yMin + g.centerY, g.angle / 360.0, 0.0)
+          run push4(&mut bytes, 1.0, 0.0, 0.0, 0.0)
+        }
+      }
     }
   }
 }
 
-effect fn packQuad(bytes: &mut List<u8>, ramps: &mut List<u8>, q: Quad) -> ()
+/// The `kind` word and both stop colors of a two-stop linear gradient `Paint`.
+effect fn pushGradientHead(
+  bytes: &mut List<u8>,
+  ramps: &mut List<u8>,
+  from: ColorStop,
+  to: ColorStop,
+  interpolation: Interpolation,
+  dash: u32,
+) -> ()
+  ! OutOfMemoryError
+  ? &mut Allocator {
+  let native = match interpolation.space {
+    ColorSpace.Srgb => true
+    _ => false
+  }
+  if native {
+    run pushU32(&mut bytes, 1)
+    run pushU32(&mut bytes, 0)
+  } else {
+    let ramp = run pushRamp(&mut ramps, from, to, interpolation)
+    run pushU32(&mut bytes, 2)
+    run pushU32(&mut bytes, ramp)
+  }
+  run pushU32(&mut bytes, dash)
+  run pushU32(&mut bytes, 0)
+  run pushColor(&mut bytes, from.color)
+  run pushColor(&mut bytes, to.color)
+}
+
+effect fn packQuad(scene: &Scene, bytes: &mut List<u8>, ramps: &mut List<u8>, q: Quad) -> ()
   ! OutOfMemoryError
   ? &mut Allocator {
   run pushRect(&mut bytes, q.bounds)
@@ -198,7 +266,7 @@ effect fn packQuad(bytes: &mut List<u8>, ramps: &mut List<u8>, q: Quad) -> ()
     BorderStyle.Solid => false
     BorderStyle.Dashed => true
   }
-  run pushPaint(&mut bytes, &mut ramps, q.background, q.bounds, dashed)
+  run pushPaint(scene, &mut bytes, &mut ramps, q.background, q.bounds, dashed)
 }
 
 effect fn packShadow(bytes: &mut List<u8>, s: Shadow) -> ()
@@ -372,7 +440,7 @@ impl Instances {
       groups = scene.groupsOf(layer, PrimitiveKind.Quad)
       i = 0
       while i < quads.length {
-        run packQuad(&mut self.quads, &mut self.ramps, placed.quad(quads[i], groups[i]))
+        run packQuad(scene, &mut self.quads, &mut self.ramps, placed.quad(quads[i], groups[i]))
         i = i + 1
       }
       let underlines = scene.underlines(layer)
@@ -400,7 +468,7 @@ impl Instances {
       groups = scene.groupsOf(layer, PrimitiveKind.Path)
       i = 0
       while i < paths.length {
-        run self.packPath(placed.path(paths[i], groups[i]), strips, fills)
+        run self.packPath(scene, placed.path(paths[i], groups[i]), strips, fills)
         i = i + 1
       }
       layer = layer + 1
@@ -409,14 +477,14 @@ impl Instances {
     run self.pathRuns.append(total)
   }
 
-  effect fn packPath(self: &mut Self, p: PathSprite, strips: &[Strip], fills: &[Fill]) -> ()
+  effect fn packPath(self: &mut Self, scene: &Scene, p: PathSprite, strips: &[Strip], fills: &[Fill]) -> ()
     ! OutOfMemoryError
     ? &mut Allocator {
     let index = usize.toU32(self.paths.length() / PATH_BYTES)
     let firstRun = self.runCount()
     run self.pathRuns.append(firstRun)
     run pushRect(&mut self.paths, p.mask.bounds)
-    run pushPaint(&mut self.paths, &mut self.ramps, p.paint, p.paintBounds, false)
+    run pushPaint(scene, &mut self.paths, &mut self.ramps, p.paint, p.paintBounds, false)
     let bottom = p.y + u32.toI32(p.height)
     let mut s = u32.toUsize(p.stripStart)
     while s < u32.toUsize(p.stripStart + p.stripCount) {

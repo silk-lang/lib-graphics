@@ -26,6 +26,9 @@ import ui_scene.primitives {
   Isolation,
   LinearGradient,
   Quad,
+  GradientShape,
+  StopRange,
+  StopsGradient,
   Shadow,
   Underline,
 }
@@ -646,6 +649,115 @@ pub effect fn gradients(scene: &mut Scene) -> ()
       gradient(90.0, color.rgb(0x22c55e), color.rgba(0xa855f780), spaces[u32.toUsize(k) * 3 + 1]),
       window(),
     )
+    k = k + 1
+  }
+}
+
+fn stopsPaint(
+  shape: GradientShape,
+  angle: f32,
+  cx: f32,
+  cy: f32,
+  rx: f32,
+  ry: f32,
+  repeating: bool,
+  range: StopRange,
+) -> Background {
+  return Background.Stops {
+    gradient: StopsGradient {
+      shape: shape,
+      angle: angle,
+      centerX: cx,
+      centerY: cy,
+      radiusX: rx,
+      radiusY: ry,
+      repeating: repeating,
+      stops: range,
+    },
+  }
+}
+
+/// Gradients with many stops: radial circles and ellipses, conic wheels and pies with a start
+/// angle, repeating rings, spokes and stripes, hard edges and translucent stops, on rounded
+/// bordered quads and on paths.
+pub effect fn manyStops(scene: &mut Scene) -> ()
+  ! GeometryError | OutOfMemoryError
+  ? &mut Allocator {
+  drop run scene.quad(
+    Quad.fill(rect(0.0, 0.0, 240.0, 180.0), window(), Background.solid(color.rgb(0xf8fafc))),
+  )
+  let warm = run scene.colorStops(
+    &[
+      ColorStop { color: color.rgb(0xfde68a), offset: 0.0 },
+      ColorStop { color: color.rgb(0xf97316), offset: 0.4 },
+      ColorStop { color: color.rgba(0x7c3aed80), offset: 0.8 },
+      ColorStop { color: color.rgba(0x7c3aed00), offset: 1.0 },
+    ],
+  )
+  let pie = run scene.colorStops(
+    &[
+      ColorStop { color: color.rgb(0xef4444), offset: 0.0 },
+      ColorStop { color: color.rgb(0xef4444), offset: 0.3 },
+      ColorStop { color: color.rgb(0x22c55e), offset: 0.3 },
+      ColorStop { color: color.rgb(0x22c55e), offset: 0.55 },
+      ColorStop { color: color.rgba(0x3b82f6c0), offset: 0.55 },
+      ColorStop { color: color.rgba(0x3b82f6c0), offset: 1.0 },
+    ],
+  )
+  let wheel = run scene.colorStops(
+    &[
+      ColorStop { color: color.rgb(0xef4444), offset: 0.0 },
+      ColorStop { color: color.rgb(0xeab308), offset: 0.2 },
+      ColorStop { color: color.rgb(0x22c55e), offset: 0.4 },
+      ColorStop { color: color.rgb(0x3b82f6), offset: 0.6 },
+      ColorStop { color: color.rgb(0xa855f7), offset: 0.8 },
+      ColorStop { color: color.rgb(0xef4444), offset: 1.0 },
+    ],
+  )
+  let stripes = run scene.colorStops(
+    &[
+      ColorStop { color: color.rgb(0x0f172a), offset: 0.0 },
+      ColorStop { color: color.rgb(0x0f172a), offset: 0.05 },
+      ColorStop { color: color.rgba(0x38bdf860), offset: 0.05 },
+      ColorStop { color: color.rgba(0x38bdf800), offset: 0.12 },
+    ],
+  )
+  let shapes = [GradientShape.Radial, GradientShape.Conic, GradientShape.Linear, GradientShape.Radial]
+  let ranges = [warm, pie, stripes, stripes]
+  let mut i: usize = 0
+  while i < 4 {
+    let x = 6.0 + usize.toF32(i) * 58.0
+    let mut q = rounded(
+      rect(x, 6.0, 52.0, 52.0),
+      usize.toF32(i) * 5.0,
+      stopsPaint(shapes[i], 20.0 + usize.toF32(i) * 25.0, 18.3, 22.6, 30.0, 22.0, i >= 2, ranges[i]),
+    )
+    q.borderWidths = Insets<f32>.uniform(1.5)
+    q.borderColor = color.rgba(0x0f172a60)
+    drop run scene.quad(q)
+    let mut c = rounded(
+      rect(x, 64.0, 52.0, 52.0),
+      26.0 - usize.toF32(i) * 6.0,
+      stopsPaint(GradientShape.Conic, usize.toF32(i) * 50.0 - 30.0, 26.4, 25.7, 0.0, 0.0, i % 2 == 1, if i % 2 == 1 { stripes } else { wheel }),
+    )
+    c.borderWidths = Insets<f32>.uniform(1.0)
+    c.borderColor = color.rgba(0x0f172a40)
+    drop run scene.quad(c)
+    i = i + 1
+  }
+  let mut cache = PathCache.make()
+  run cache.beginFrame()
+  let shape = run star(5, 26.0)
+  let mut k: u32 = 0
+  while k < 2 {
+    let ox = 60.0 + u32.toF32(k) * 120.0
+    let place = Affine.new(1.0, 0.0, 0.0, 1.0, f32.toF64(ox), 148.0)
+    let paint = if k == 0 {
+      stopsPaint(GradientShape.Radial, 0.0, 26.0, 26.0, 26.0, 26.0, false, warm)
+    } else {
+      stopsPaint(GradientShape.Conic, 90.0, 26.0, 26.0, 0.0, 0.0, false, wheel)
+    }
+    drop run cache.fill(&mut scene, u32.toU64(k), &shape, &place, NONZERO, paint, window())
     k = k + 1
   }
 }

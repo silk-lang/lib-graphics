@@ -73,10 +73,49 @@ pub struct LinearGradient {
 
 impl Copy for LinearGradient {}
 
+/// The shape of a [`StopsGradient`].
+pub enum GradientShape {
+  /// Along a line through the box center at `angle`, as [`LinearGradient`].
+  Linear,
+  /// Out from the center to the ellipse with radii `radiusX`, `radiusY`: offset 0 at the center,
+  /// 1 on the ellipse, as CSS `radial-gradient`.
+  Radial,
+  /// Around the center, from the ray at `angle` degrees clockwise from up (offset 0) clockwise to
+  /// a full turn later (offset 1), as CSS `conic-gradient`.
+  Conic,
+}
+
+/// A run of stops kept by the scene ([`scene.Scene.colorStops`]).
+pub struct StopRange {
+  pub start: u32,
+  pub count: u32,
+}
+
+impl Copy for StopRange {}
+
+/// A CSS gradient with any number of stops, interpolated in sRGB. Offsets never decrease; two
+/// stops at one offset make a hard edge. Outside the stops the end colors extend (pad), or with
+/// `repeating` the run from the first stop to the last repeats.
+pub struct StopsGradient {
+  pub shape: GradientShape,
+  /// Degrees clockwise from up: the line's direction (linear) or the start ray (conic).
+  pub angle: f32,
+  /// The center (radial, conic), from the top left corner of the box the gradient spans.
+  pub centerX: f32,
+  pub centerY: f32,
+  pub radiusX: f32,
+  pub radiusY: f32,
+  pub repeating: bool,
+  pub stops: StopRange,
+}
+
+impl Copy for StopsGradient {}
+
 /// What fills a quad or a path.
 pub union Background {
   Solid { pub color: Rgba<f32> },
   Linear { pub gradient: LinearGradient },
+  Stops { pub gradient: StopsGradient },
 }
 
 impl Copy for Background {}
@@ -105,6 +144,7 @@ impl Background {
       Background.Solid { color: c } => color.isTransparent(c)
       Background.Linear { gradient } => color.isTransparent(gradient.from.color)
         && color.isTransparent(gradient.to.color)
+      Background.Stops { .. } => false
     }
   }
 }
