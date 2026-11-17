@@ -39,7 +39,7 @@ Every batch of the scene is one instanced draw of six vertices per instance, as 
 | Path | `shaders/path.wgsl` | `vector` coverage strips in gpu_scene's run layout (4-row bands, a word of coverage per column), placed at the sprite's integer origin; bands start at the sprite's own `y`. |
 | Layer | `shaders/layer.wgsl` | Isolated layers drawn into pooled RGBA8 textures and composited with gpu_scene's `blend.wgsl` (all `vector.layer` blend modes) and the group opacity, with optional layer/backdrop blur and color filters. |
 
-Gradients have two stops and any `silk.color` interpolation. sRGB gradients are mixed in the
+Gradients (linear, radial and conic) have two stops and any `silk.color` interpolation. sRGB gradients are mixed in the
 shader; every other interpolation (linear sRGB, Oklab, Oklch and the other polar spaces with their
 hue arcs, wide gamut spaces) gets a 256-entry ramp of premultiplied RGBA8 words, sampled on the
 CPU with the same `color.mix` the CPU reference uses, in a storage buffer the quad and path

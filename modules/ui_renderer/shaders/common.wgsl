@@ -82,11 +82,12 @@ fn coverage(distance: f32) -> f32 {
   return clamp(0.5 - distance, 0.0, 1.0);
 }
 
-// A background: a solid color or a two-stop CSS linear gradient. `kind.x` is 0 for solid, 1 for a
+// A background: a solid color or a two-stop CSS gradient. `kind.x` is 0 for solid, 1 for a
 // gradient mixed here in sRGB, 2 for a gradient read from ramp `kind.y` of `ramps` (any other
-// interpolation, sampled on the CPU with silk.color). `first` and `last` hold the stops, straight
-// sRGB (`first` is the solid color). `line` is the gradient's center and direction, `stops` its half
-// length and the two stop offsets.
+// interpolation, sampled on the CPU with silk.color); `kind.w` is its shape: 0 linear, 1 radial,
+// 2 conic. `first` and `last` hold the stops, straight sRGB (`first` is the solid color). `line`
+// is the center and then the direction (linear), the reciprocal radii (radial) or the start angle
+// in turns (conic); `stops` holds the linear half length and the two stop offsets.
 struct Paint {
   kind: vec4u,
   first: vec4f,
@@ -104,7 +105,14 @@ fn premultiply(c: vec4f) -> vec4f {
 // 1/255 steps and mix premultiplied, as the CPU reference's 256-entry ramp does.
 fn shade(paint: Paint, p: vec2f) -> vec4f {
   if paint.kind.x == 0u { return premultiply(paint.first); }
-  let along = dot(p - paint.line.xy, paint.line.zw) / paint.stops.x * 0.5 + 0.5;
+  let d = p - paint.line.xy;
+  var along = dot(d, paint.line.zw) / paint.stops.x * 0.5 + 0.5;
+  if paint.kind.w == 1u {
+    along = length(d * paint.line.zw);
+  } else if paint.kind.w == 2u {
+    let a = atan2(d.x, -d.y) / 6.2831855 - paint.line.z;
+    along = a - floor(a);
+  }
   let span = paint.stops.z - paint.stops.y;
   var t = select(0.0, 1.0, along >= paint.stops.y);
   if span > 0.0 { t = (along - paint.stops.y) / span; }

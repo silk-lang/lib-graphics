@@ -73,10 +73,41 @@ pub struct LinearGradient {
 
 impl Copy for LinearGradient {}
 
+/// A two-stop radial gradient, as CSS `radial-gradient(ellipse rx ry at cx cy, from, to)`: offset 0
+/// at the center, 1 on the ellipse with radii `radiusX` and `radiusY`. The center and radii are in
+/// device pixels, like the primitive's bounds. Outside the stops the end colors extend (pad).
+pub struct RadialGradient {
+  pub centerX: f32,
+  pub centerY: f32,
+  pub radiusX: f32,
+  pub radiusY: f32,
+  pub from: ColorStop,
+  pub to: ColorStop,
+  pub interpolation: Interpolation,
+}
+
+impl Copy for RadialGradient {}
+
+/// A two-stop conic gradient, as CSS `conic-gradient(from <angle> at cx cy, from, to)`: offset 0
+/// on the ray at `angle` degrees clockwise from up, rising clockwise to 1 a full turn later. The
+/// center is in device pixels. Outside the stops the end colors extend (pad).
+pub struct ConicGradient {
+  pub centerX: f32,
+  pub centerY: f32,
+  pub angle: f32,
+  pub from: ColorStop,
+  pub to: ColorStop,
+  pub interpolation: Interpolation,
+}
+
+impl Copy for ConicGradient {}
+
 /// What fills a quad or a path.
 pub union Background {
   Solid { pub color: Rgba<f32> },
   Linear { pub gradient: LinearGradient },
+  Radial { pub gradient: RadialGradient },
+  Conic { pub gradient: ConicGradient },
 }
 
 impl Copy for Background {}
@@ -104,6 +135,10 @@ impl Background {
     return match &self.* {
       Background.Solid { color: c } => color.isTransparent(c)
       Background.Linear { gradient } => color.isTransparent(gradient.from.color)
+        && color.isTransparent(gradient.to.color)
+      Background.Radial { gradient } => color.isTransparent(gradient.from.color)
+        && color.isTransparent(gradient.to.color)
+      Background.Conic { gradient } => color.isTransparent(gradient.from.color)
         && color.isTransparent(gradient.to.color)
     }
   }

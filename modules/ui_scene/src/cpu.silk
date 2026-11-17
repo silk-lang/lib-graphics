@@ -34,6 +34,7 @@ import vector.strips { Coverage, NONZERO, Rasterizer }
 import vector.stroke { CAP_BUTT, JOIN_ROUND, Stroke, Stroker }
 import color
 import silk.color.rgba { Rgba }
+import silk.color.color { Interpolation }
 import primitives {
   Background,
   BorderStyle,
@@ -43,6 +44,7 @@ import primitives {
   LayerSprite,
   LinearGradient,
   PathSprite,
+  ColorStop,
   Quad,
   Shadow,
   Underline,
@@ -281,9 +283,17 @@ fn areaOf(bounds: Rect<f32>, clip: Rect<f32>, targetWidth: u32, targetHeight: u3
   }
 }
 
-/// Where a pixel's color comes from: one premultiplied color, or a CSS linear gradient ramp.
+/// Gradient shapes, as `kind.w` of the GPU renderer's `Paint`.
+const LINEAR: u32 = 0
+const RADIAL: u32 = 1
+const CONIC: u32 = 2
+
+/// Where a pixel's color comes from: one premultiplied color, or a CSS gradient ramp. For a
+/// linear gradient `dx`, `dy` is the line's direction; for a radial one the reciprocal radii; for
+/// a conic one `dx` is the start angle in turns.
 struct Painter {
   solid: bool,
+  shape: u32,
   color: u32,
   ramp: List<u32>,
   cx: f32,
@@ -299,6 +309,7 @@ impl Painter {
   fn make() -> Painter {
     return Painter {
       solid: true,
+      shape: LINEAR,
       color: 0,
       ramp: List<u32>.make(),
       cx: 0.0,
@@ -323,10 +334,26 @@ impl Painter {
     match background {
       Background.Solid { color: fill } => self.setColor(fill)
       Background.Linear { gradient } => run self.setGradient(gradient, box)
+      Background.Radial { gradient: g } => {
+        run self.setRamp(g.from, g.to, g.interpolation)
+        self.shape = RADIAL
+        self.cx = g.centerX
+        self.cy = g.centerY
+        self.dx = 1.0 / f32.max(g.radiusX, 0.000001)
+        self.dy = 1.0 / f32.max(g.radiusY, 0.000001)
+      }
+      Background.Conic { gradient: g } => {
+        run self.setRamp(g.from, g.to, g.interpolation)
+        self.shape = CONIC
+        self.cx = g.centerX
+        self.cy = g.centerY
+        self.dx = g.angle / 360.0
+        self.dy = 0.0
+      }
     }
   }
 
-  effect fn setGradient(self: &mut Self, g: LinearGradient, box: Rect<f32>) -> ()
+  effect fn setRamp(self: &mut Self, from: ColorStop, to: ColorStop, interpolation: Interpolation) -> ()
     ! OutOfMemoryError
     ? &mut Allocator {
     self.solid = false
@@ -334,10 +361,19 @@ impl Painter {
     let mut i: u32 = 0
     while i < 256 {
       let t = u32.toF32(i) / 255.0
-      let c = color.mix(g.from.color, g.to.color, t, g.interpolation)
+      let c = color.mix(from.color, to.color, t, interpolation)
       run self.ramp.append(pack(color.toPremultipliedRgba8(c)))
       i = i + 1
     }
+    self.from = from.offset
+    self.to = to.offset
+  }
+
+  effect fn setGradient(self: &mut Self, g: LinearGradient, box: Rect<f32>) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    run self.setRamp(g.from, g.to, g.interpolation)
+    self.shape = LINEAR
 
     // CSS: the gradient line runs through the center at `angle` clockwise from up, long enough
     // that the corners reach 0 and 1.
@@ -351,8 +387,6 @@ impl Painter {
     self.dx = dx
     self.dy = dy
     self.half = f32.max((f32.abs(w * dx) + f32.abs(h * dy)) * 0.5, 0.000001)
-    self.from = g.from.offset
-    self.to = g.to.offset
   }
 
   /// The packed premultiplied color at the center of pixel `(x, y)`.
@@ -362,7 +396,16 @@ impl Painter {
     }
     let px = i32.toF32(x) + 0.5 - self.cx
     let py = i32.toF32(y) + 0.5 - self.cy
-    let along = (px * self.dx + py * self.dy) / self.half * 0.5 + 0.5
+    let along = if self.shape == RADIAL {
+      let ex = px * self.dx
+      let ey = py * self.dy
+      f32.sqrt(ex * ex + ey * ey)
+    } else if self.shape == CONIC {
+      let a = f32.atan2(px, -py) / 6.2831855 - self.dx
+      a - f32.floor(a)
+    } else {
+      (px * self.dx + py * self.dy) / self.half * 0.5 + 0.5
+    }
     let span = self.to - self.from
     let t: f32 = if span > 0.0 {
       (along - self.from) / span

@@ -12,7 +12,7 @@ depends on a GPU, so it builds for wasm32 too.
 
 - `primitives`: the records a frame is made of, all `Copy`:
   - `Quad`: per-corner radii (`silk.geometry.corners.Corners`), per-edge border widths, a solid or
-    dashed border, and a solid or two-stop linear gradient `Background` interpolated in any
+    dashed border, and a solid or two-stop linear, radial or conic gradient `Background` interpolated in any
     `silk.color` space (sRGB, Oklab, Oklch, ...).
   - `Shadow`: a blurred rounded rectangle with an offset and spread, drop or inset, as CSS
     `box-shadow` (the blur radius is twice the Gaussian's sigma).

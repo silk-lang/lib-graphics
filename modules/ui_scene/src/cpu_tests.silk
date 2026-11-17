@@ -15,6 +15,8 @@ import primitives {
   Isolation,
   LinearGradient,
   Quad,
+  RadialGradient,
+  ConicGradient,
   Shadow,
   Underline,
 }
@@ -222,6 +224,47 @@ effect fn gradients() -> ()
     near(mid.r, 140, 4) && near(mid.g, 83, 6) && near(mid.b, 162, 4),
     "Oklab interpolation",
   )
+
+  // A radial ellipse 40 wide and 20 tall at (60, 50), black at the center, white on the ellipse.
+  let mut round = Scene.make()
+  let radial = Background.Radial {
+    gradient: RadialGradient {
+      centerX: 60.0,
+      centerY: 50.0,
+      radiusX: 40.0,
+      radiusY: 20.0,
+      from: ColorStop { color: color.rgb(0x000000), offset: 0.0 },
+      to: ColorStop { color: color.rgb(0xffffff), offset: 1.0 },
+      interpolation: Interpolation.new(ColorSpace.Srgb),
+    },
+  }
+  drop run round.quad(Quad.fill(rect(0.0, 0.0, 100.0, 100.0), window(), radial))
+  let r = run render(&mut round, &pixels)
+  run Testing.expect(r.pixel(60, 50).r < 8, "radial: offset 0 at the center")
+  run Testing.expect(
+    near(r.pixel(80, 50).r, 128, 4) && near(r.pixel(60, 60).r, 128, 6),
+    "radial: halfway out along both radii",
+  )
+  run Testing.expect(r.pixel(5, 5).r > 252, "radial: pads past the ellipse")
+
+  // A conic from 90deg (pointing right) around (50, 50): black there, a quarter at the bottom.
+  let mut wheel = Scene.make()
+  let conic = Background.Conic {
+    gradient: ConicGradient {
+      centerX: 50.0,
+      centerY: 50.0,
+      angle: 90.0,
+      from: ColorStop { color: color.rgb(0x000000), offset: 0.0 },
+      to: ColorStop { color: color.rgb(0xffffff), offset: 1.0 },
+      interpolation: Interpolation.new(ColorSpace.Srgb),
+    },
+  }
+  drop run wheel.quad(Quad.fill(rect(0.0, 0.0, 100.0, 100.0), window(), conic))
+  let c = run render(&mut wheel, &pixels)
+  run Testing.expect(c.pixel(90, 49).r > 250 || c.pixel(90, 50).r < 6, "conic: the seam at the start")
+  run Testing.expect(near(c.pixel(49, 90).r, 64, 4), "conic: a quarter turn clockwise at the bottom")
+  run Testing.expect(near(c.pixel(10, 49).r, 128, 4), "conic: half a turn at the left")
+  run Testing.expect(near(c.pixel(50, 10).r, 191, 4), "conic: three quarters at the top")
 }
 
 test effect fn linearGradients() -> ()

@@ -26,6 +26,8 @@ import ui_scene.primitives {
   Isolation,
   LinearGradient,
   Quad,
+  RadialGradient,
+  ConicGradient,
   Shadow,
   Underline,
 }
@@ -646,6 +648,100 @@ pub effect fn gradients(scene: &mut Scene) -> ()
       gradient(90.0, color.rgb(0x22c55e), color.rgba(0xa855f780), spaces[u32.toUsize(k) * 3 + 1]),
       window(),
     )
+    k = k + 1
+  }
+}
+
+/// Radial and conic gradients: circles and ellipses with stops inside them, conic wheels with a
+/// start angle, both in sRGB and through ramps, on rounded bordered quads and on a path.
+pub effect fn radialConic(scene: &mut Scene) -> ()
+  ! GeometryError | OutOfMemoryError
+  ? &mut Allocator {
+  drop run scene.quad(
+    Quad.fill(rect(0.0, 0.0, 240.0, 180.0), window(), Background.solid(color.rgb(0xf8fafc))),
+  )
+  let spaces = [
+    Interpolation.new(ColorSpace.Srgb),
+    Interpolation.new(ColorSpace.Oklab),
+    Interpolation { space: ColorSpace.Oklch, hue: HueInterpolation.Longer },
+    Interpolation.new(ColorSpace.SrgbLinear),
+  ]
+  let mut i: usize = 0
+  while i < 4 {
+    let x = 6.0 + usize.toF32(i) * 58.0
+    let y: f32 = 6.0
+    let rx: f32 = if i % 2 == 0 { 26.0 } else { 34.0 }
+    let ry: f32 = if i % 2 == 0 { 26.0 } else { 18.0 }
+    let mut q = rounded(
+      rect(x, y, 52.0, 52.0),
+      usize.toF32(i) * 4.0,
+      Background.Radial {
+        gradient: RadialGradient {
+          centerX: x + 20.0 + usize.toF32(i) * 3.0,
+          centerY: y + 26.0,
+          radiusX: rx,
+          radiusY: ry,
+          from: ColorStop { color: color.rgb(0xfacc15), offset: 0.1 * usize.toF32(i) },
+          to: ColorStop { color: color.rgba(0x7c3aedb0), offset: 1.0 - 0.1 * usize.toF32(i) },
+          interpolation: spaces[i],
+        },
+      },
+    )
+    q.borderWidths = Insets<f32>.uniform(1.5)
+    q.borderColor = color.rgba(0x0f172a60)
+    drop run scene.quad(q)
+    let cy: f32 = 64.0
+    let mut c = rounded(
+      rect(x, cy, 52.0, 52.0),
+      26.0 - usize.toF32(i) * 6.0,
+      Background.Conic {
+        gradient: ConicGradient {
+          centerX: x + 26.0,
+          centerY: cy + 26.0,
+          angle: usize.toF32(i) * 50.0 - 30.0,
+          from: ColorStop { color: color.rgb(0xef4444), offset: 0.0 },
+          to: ColorStop { color: color.rgba(0x0ea5e9c0), offset: 0.75 + 0.05 * usize.toF32(i) },
+          interpolation: spaces[3 - i],
+        },
+      },
+    )
+    c.borderWidths = Insets<f32>.uniform(1.0)
+    c.borderColor = color.rgba(0x0f172a40)
+    drop run scene.quad(c)
+    i = i + 1
+  }
+  let mut cache = PathCache.make()
+  run cache.beginFrame()
+  let shape = run star(5, 26.0)
+  let mut k: u32 = 0
+  while k < 2 {
+    let ox = 60.0 + u32.toF32(k) * 120.0
+    let place = Affine.new(1.0, 0.0, 0.0, 1.0, f32.toF64(ox), 148.0)
+    let paint = if k == 0 {
+      Background.Radial {
+        gradient: RadialGradient {
+          centerX: ox,
+          centerY: 148.0,
+          radiusX: 26.0,
+          radiusY: 26.0,
+          from: ColorStop { color: color.rgb(0x22c55e), offset: 0.0 },
+          to: ColorStop { color: color.rgba(0x1e3a8a90), offset: 1.0 },
+          interpolation: spaces[1],
+        },
+      }
+    } else {
+      Background.Conic {
+        gradient: ConicGradient {
+          centerX: ox,
+          centerY: 148.0,
+          angle: 90.0,
+          from: ColorStop { color: color.rgb(0xf97316), offset: 0.0 },
+          to: ColorStop { color: color.rgb(0x14b8a6), offset: 1.0 },
+          interpolation: spaces[0],
+        },
+      }
+    }
+    drop run cache.fill(&mut scene, u32.toU64(k), &shape, &place, NONZERO, paint, window())
     k = k + 1
   }
 }
