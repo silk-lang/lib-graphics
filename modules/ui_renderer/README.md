@@ -44,9 +44,11 @@ shader; every other interpolation (linear sRGB, Oklab, Oklch and the other polar
 hue arcs, wide gamut spaces) gets a 256-entry ramp of premultiplied RGBA8 words, sampled on the
 CPU with the same `color.mix` the CPU reference uses, in a storage buffer the quad and path
 shaders read. Either way the parameter steps in 1/255, as the CPU reference's ramp does. `Stops` gradients
-(linear, radial, conic, any number of stops, repeating or not) mix in sRGB in the shader: their
-stops go into the same storage buffer, five words each, and the parameter steps in 1/255 between
-neighbouring stops.
+(linear, radial, conic, any number of stops, repeating or not) put their stops in the same
+storage buffer, five words each, and the parameter steps in 1/255 between neighbouring stops. In
+sRGB the shader mixes them; in any other interpolation each pair of neighbours gets its own ramp.
+Ramps clip to sRGB channel by channel instead of gamut mapping, as Chromium paints gradients, and
+stops may hold extended sRGB so a wide gamut CSS color keeps its chroma until the mix.
 Content masks clip by pixel area. `shaders/common.wgsl` holds what the pipelines share; edit the
 `.wgsl` files and run `silk task embed-shaders`, never the generated module.
 

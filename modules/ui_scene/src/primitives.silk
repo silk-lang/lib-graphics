@@ -178,8 +178,8 @@ pub struct StopRange {
 
 impl Copy for StopRange {}
 
-/// A CSS gradient with any number of stops, interpolated in sRGB. Offsets never decrease; two
-/// stops at one offset make a hard edge. Outside the stops the end colors extend (pad), or with
+/// A CSS gradient with any number of stops, each neighbouring pair interpolated in
+/// `interpolation` (CSS Color 4). Offsets never decrease; two stops at one offset make a hard edge. Outside the stops the end colors extend (pad), or with
 /// `repeating` the run from the first stop to the last repeats.
 pub struct StopsGradient {
   pub shape: GradientShape,
@@ -192,6 +192,9 @@ pub struct StopsGradient {
   pub radiusY: f32,
   pub repeating: bool,
   pub stops: StopRange,
+  /// How neighbouring stops are interpolated (`silk.color`): the space, and the hue arc for polar
+  /// spaces. CSS gradients without `in <space>` use sRGB.
+  pub interpolation: Interpolation,
 }
 
 impl Copy for StopsGradient {}
