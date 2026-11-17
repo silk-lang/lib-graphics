@@ -717,6 +717,7 @@ impl Scene {
     run self.groups.appendSlice(other.groups.asSlice())
     run self.scrollPositions.appendSlice(other.scrollPositions.asSlice())
     run self.scrollLog.appendSlice(other.scrollLog.asSlice())
+    run self.stops.appendSlice(other.stops.asSlice())
   }
 
   /// Empties the scene for the next frame and keeps its storage.
