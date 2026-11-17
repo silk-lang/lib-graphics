@@ -7,7 +7,7 @@
 // target pixel back to a layer pixel, within the layer pixels `source` (x0, y0, x1, y1).
 struct Params {
   op: u32, mode: u32, opacity: u32, backdropEnabled: u32, clip: vec4f, radius: f32, shape: u32, unused: vec2u,
-  inverse0: vec4f, inverse1: vec4f, inverse2: vec4f, source: vec4f, mapped: u32, masked: u32, pad1: u32, pad2: u32,
+  inverse0: vec4f, inverse1: vec4f, inverse2: vec4f, source: vec4f, mapped: u32, masked: u32, rounded: u32, pad2: u32,
   // The content mask the layer lands in; its rounded corners clip the layer (radii tl, tr, br, bl).
   maskBounds: vec4f, maskRadii: vec4f,
 }
@@ -56,7 +56,6 @@ fn mappedBytes(position: vec2f) -> vec4u {
 // How much of the pixel at `p` the mask's rounded corners keep (common.wgsl's cornerCoverage).
 fn corner(p: vec2f) -> f32 {
   let radii = params.maskRadii;
-  if max(max(radii.x, radii.y), max(radii.z, radii.w)) <= 0.0 { return 1.0; }
   let r = params.maskBounds;
   let half = (r.zw - r.xy) * 0.5;
   let q = p - (r.xy + half);
@@ -89,7 +88,7 @@ fn faded(s: vec4u) -> vec4u {
     content = inMask(content, pixel);
   }
   if params.op == OP_COPY { return vec4f(content) / 255.0; }
-  content = scaled(content, corner(position.xy));
+  if params.rounded != 0u { content = scaled(content, corner(position.xy)); }
   if params.op == OP_BLIT {
     if params.opacity == 255u { return vec4f(content) / 255.0; }
     return vec4f(faded(content)) / 255.0;

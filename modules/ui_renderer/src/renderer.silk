@@ -391,6 +391,7 @@ fn writeMapping(header: &mut [u8], mapping: &Mapping) -> () {
     writeU32(&mut header, 128 + k * 4, f32.toBits(words[k]))
     k = k + 1
   }
+  writeU32(&mut header, 120, if c.isRounded() { 1 } else { 0 })
   if !mapping.mapped {
     return
   }
