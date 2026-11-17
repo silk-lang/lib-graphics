@@ -5,12 +5,12 @@
 //! [`rgb`] and [`rgba`], or from any `silk.color.color.Color` (Oklch, Display P3, HSL, ...) with
 //! [`fromColor`], which maps the color into the sRGB gamut. Gradients interpolate their stops with
 //! `silk.color` in any CSS Color 4 interpolation space ([`mix`]).
-import silk.color.color { Color, Interpolation }
+import silk.color.color { Color, ColorSpace, Interpolation }
 import silk.color.rgba { Rgba }
 import silk.num.f32
 import silk.num.f64
 import silk.num.u32
-import vector.pixmap { Rgba8 }
+import vector.pixmap { Rgba8, pack }
 
 fn channel(hex: u32, shift: u32) -> f32 {
   return u32.toF32(u32.shiftRight(hex, shift) & 255) / 255.0
@@ -58,9 +58,43 @@ pub fn isTransparent(color: Rgba<f32>) -> bool {
 }
 
 /// The color `t` of the way from `from` to `to`, interpolated as CSS Color 4 specifies
-/// (premultiplied, in `interpolation.space`), then mapped into the sRGB gamut.
+/// (premultiplied, in `interpolation.space`), then clipped to the sRGB gamut channel by channel,
+/// as browsers paint gradients. `from` and `to` may lie outside the gamut (extended sRGB), so a
+/// wide gamut stop keeps its own hue and chroma until the mix.
 pub fn mix(from: Rgba<f32>, to: Rgba<f32>, t: f32, interpolation: Interpolation) -> Rgba<f32> {
-  return fromColor(toColor(from).mix(toColor(to), f32.toF64(t), interpolation))
+  let space = interpolation.space
+  return mixPrepared(prepare(from, space), prepare(to, space), t, interpolation)
+}
+
+/// `color` converted to `space` for [`mixPrepared`]. An achromatic color's hue is missing there,
+/// so it takes the other color's (CSS Color 4 §12.4).
+pub fn prepare(color: Rgba<f32>, space: ColorSpace) -> Color {
+  return toColor(color).to(space)
+}
+
+/// [`mix`] of colors already [`prepare`]d for `interpolation.space`.
+pub fn mixPrepared(from: Color, to: Color, t: f32, interpolation: Interpolation) -> Rgba<f32> {
+  let mixed = from.mix(to, f32.toF64(t), interpolation).to(ColorSpace.Srgb)
+  return Rgba<f32>.new(
+    f64.toF32(mixed.components[0]),
+    f64.toF32(mixed.components[1]),
+    f64.toF32(mixed.components[2]),
+    f64.toF32(mixed.alpha),
+  )
+}
+
+/// Whether `interpolation` mixes in sRGB, which renderers do without a ramp.
+pub fn isSrgb(interpolation: Interpolation) -> bool {
+  return match interpolation.space {
+    ColorSpace.Srgb => true
+    _ => false
+  }
+}
+
+/// Entry `step` (0 to 255) of the ramp between prepared colors `from` and `to`: their
+/// [`mixPrepared`] at `step / 255`, as packed premultiplied bytes.
+pub fn rampEntry(from: Color, to: Color, step: u32, interpolation: Interpolation) -> u32 {
+  return pack(toPremultipliedRgba8(mixPrepared(from, to, u32.toF32(step) / 255.0, interpolation)))
 }
 
 fn clampUnit(value: f32) -> f32 {

@@ -33,6 +33,7 @@ import vector.pixmap { Pixmap, Rgba8, overPacked, pack, scalePacked }
 import vector.strips { Coverage, NONZERO, Rasterizer }
 import vector.stroke { CAP_BUTT, JOIN_ROUND, Stroke, Stroker }
 import color
+import silk.color.color { Interpolation }
 import silk.color.rgba { Rgba }
 import primitives {
   Background,
@@ -319,7 +320,8 @@ const RADIAL: u32 = 1
 const CONIC: u32 = 2
 
 /// Where a pixel's color comes from: one premultiplied color, a two-stop linear gradient's ramp,
-/// or the stops of a [`StopsGradient`]. For a linear shape `dx`, `dy` is the line's direction;
+/// or the stops of a [`StopsGradient`] (with one ramp per pair of neighbours in `ramp` when they
+/// are not interpolated in sRGB). For a linear shape `dx`, `dy` is the line's direction;
 /// for a radial one the reciprocal radii; for a conic one `dx` is the start angle in turns.
 struct Painter {
   solid: bool,
@@ -388,6 +390,9 @@ impl Painter {
         self.ramp.clear()
         self.stops.clear()
         run self.stops.appendSlice(scene.stopsOf(g.stops))
+        if !color.isSrgb(g.interpolation) {
+          run self.setStopRamps(g.interpolation)
+        }
         self.repeating = g.repeating
         match g.shape {
           GradientShape.Linear => self.setLine(g.angle, box)
@@ -419,16 +424,49 @@ impl Painter {
     self.solid = false
     self.stops.clear()
     self.ramp.clear()
+    let from = color.prepare(g.from.color, g.interpolation.space)
+    let to = color.prepare(g.to.color, g.interpolation.space)
     let mut i: u32 = 0
     while i < 256 {
-      let t = u32.toF32(i) / 255.0
-      let c = color.mix(g.from.color, g.to.color, t, g.interpolation)
-      run self.ramp.append(pack(color.toPremultipliedRgba8(c)))
+      run self.ramp.append(color.rampEntry(from, to, i, g.interpolation))
       i = i + 1
     }
     self.from = g.from.offset
     self.to = g.to.offset
     self.setLine(g.angle, box)
+  }
+
+  /// One 256-entry ramp per pair of neighbouring stops, as the GPU renderer's `ramps`. A pair at
+  /// one offset is never sampled, and a pair of equal colors needs no mixing.
+  effect fn setStopRamps(self: &mut Self, interpolation: Interpolation) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    let n = self.stops.length()
+    let mut i: usize = 0
+    while i + 1 < n {
+      let a = self.stops.get(i)
+      let b = self.stops.get(i + 1)
+      let same = a.color.r == b.color.r && a.color.g == b.color.g && a.color.b == b.color.b
+        && a.color.a == b.color.a
+      let from = color.prepare(a.color, interpolation.space)
+      let to = color.prepare(b.color, interpolation.space)
+      let flat = if b.offset > a.offset && same {
+        pack(color.toPremultipliedRgba8(a.color))
+      } else {
+        0
+      }
+      let mut step: u32 = 0
+      while step < 256 {
+        let entry = if b.offset > a.offset && !same {
+          color.rampEntry(from, to, step, interpolation)
+        } else {
+          flat
+        }
+        run self.ramp.append(entry)
+        step = step + 1
+      }
+      i = i + 1
+    }
   }
 
   /// CSS: the gradient line runs through the center at `angle` clockwise from up, long enough
@@ -499,6 +537,9 @@ impl Painter {
     }
     let lo = stops[i].offset
     let t = (a - lo) / (stops[i + 1].offset - lo)
+    if self.ramp.length() != 0 {
+      return self.ramp.get(i * 256 + u32.toUsize(toByte(t * 255.0)))
+    }
     let step = f32.floor(clampF(t, 0.0, 1.0) * 255.0 + 0.5) / 255.0
     return mixPremultiplied(stops[i].color, stops[i + 1].color, step)
   }

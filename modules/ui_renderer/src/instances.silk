@@ -116,11 +116,48 @@ effect fn pushRamp(ramps: &mut List<u8>, from: ColorStop, to: ColorStop, interpo
     run pushU32(&mut ramps, 0)
   }
   let index = usize.toU32(ramps.length() / (RAMP_LENGTH * 4))
+  let a = color.prepare(from.color, interpolation.space)
+  let b = color.prepare(to.color, interpolation.space)
+  let mut i: u32 = 0
+  while i < 256 {
+    run pushU32(&mut ramps, color.rampEntry(a, b, i, interpolation))
+    i = i + 1
+  }
+  return index
+}
+
+/// Appends one 256-entry ramp per pair of neighbouring `stops`, as the CPU reference's
+/// `Painter.setStopRamps`, and returns the index of the first.
+effect fn pushStopRamps(ramps: &mut List<u8>, stops: &[ColorStop], interpolation: Interpolation) -> u32
+  ! OutOfMemoryError
+  ? &mut Allocator {
+  while ramps.length() % (RAMP_LENGTH * 4) != 0 {
+    run pushU32(&mut ramps, 0)
+  }
+  let index = usize.toU32(ramps.length() / (RAMP_LENGTH * 4))
   let mut i: usize = 0
-  while i < RAMP_LENGTH {
-    let t = usize.toF32(i) / 255.0
-    let c = color.mix(from.color, to.color, t, interpolation)
-    run pushU32(&mut ramps, pack(color.toPremultipliedRgba8(c)))
+  while i + 1 < stops.length {
+    let a = stops[i]
+    let b = stops[i + 1]
+    let same = a.color.r == b.color.r && a.color.g == b.color.g && a.color.b == b.color.b
+      && a.color.a == b.color.a
+    let from = color.prepare(a.color, interpolation.space)
+    let to = color.prepare(b.color, interpolation.space)
+    let flat = if b.offset > a.offset && same {
+      pack(color.toPremultipliedRgba8(a.color))
+    } else {
+      0
+    }
+    let mut step: u32 = 0
+    while step < 256 {
+      let entry = if b.offset > a.offset && !same {
+        color.rampEntry(from, to, step, interpolation)
+      } else {
+        flat
+      }
+      run pushU32(&mut ramps, entry)
+      step = step + 1
+    }
     i = i + 1
   }
   return index
@@ -178,6 +215,13 @@ effect fn pushPaint(
         run pushF32(&mut ramps, list[i].color.a)
         i = i + 1
       }
+      // Any interpolation but sRGB: one ramp per pair of neighbours, numbered from `first.z - 1`.
+      let ramp: f32 = if color.isSrgb(g.interpolation) || list.length < 2 {
+        0.0
+      } else {
+        let first = run pushStopRamps(&mut ramps, list, g.interpolation)
+        u32.toF32(first + 1)
+      }
       let shape: u32 = match g.shape {
         GradientShape.Linear => 0
         GradientShape.Radial => 1
@@ -187,7 +231,7 @@ effect fn pushPaint(
       run pushU32(&mut bytes, start)
       run pushU32(&mut bytes, dash)
       run pushU32(&mut bytes, shape)
-      run push4(&mut bytes, usize.toF32(list.length), if g.repeating { 1.0 } else { 0.0 }, 0.0, 0.0)
+      run push4(&mut bytes, usize.toF32(list.length), if g.repeating { 1.0 } else { 0.0 }, ramp, 0.0)
       run push4(&mut bytes, 0.0, 0.0, 0.0, 0.0)
       match g.shape {
         GradientShape.Linear => {
