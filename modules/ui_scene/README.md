@@ -152,7 +152,7 @@ border edge cannot paint a stray line during fractional scrolling.
 ```sh
 silk test --manifest-path modules/ui_scene/silk.toml --root src/tests.silk
 silk build --manifest-path modules/ui_scene/tests/silk.toml
-build/llvm/<target>/debug/graphics-ui-scene-tests modules/ui_scene/tests/goldens
+build/<target>/dev/graphics-ui-scene-tests modules/ui_scene/tests/goldens
 ```
 
 The unit tests check draw orders against a brute-force overlap scan, that a 100 x 100 grid keeps
