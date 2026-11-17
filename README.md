@@ -49,7 +49,7 @@ silk build --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32
 ```
 
 Silk owns dependency fetching, native archives, C compilation, linking and tests.
-Build outputs are under `build/llvm/<target>/<debug|release>/`; Windows native
+Build outputs are under `build/<target>/<dev|release>/`; Windows native
 executables have `.exe`. CPU-only work needs no GPU runtime:
 
 ```sh
@@ -79,7 +79,7 @@ shorter 300-second build/Callgrind and 120-second sample deadlines.
   silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
   silk task prepare-windows
   silk build --manifest-path modules/ui_renderer/tests/silk.toml
-  silk task prepare-windows --runtime-directory build/llvm/x86_64-pc-windows-msvc/debug
+  silk task prepare-windows --runtime-directory build/x86_64-pc-windows-msvc/dev
   ```
 
 `silk task setup-ci --linux-gpu` and `silk task setup-ci --browser` delegate to

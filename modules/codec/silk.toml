@@ -2,12 +2,6 @@
 name = "graphics-codec"
 description = "PNG and JPEG decoding, PNG encoding and premultiplied RGBA images"
 version = "0.1.0"
-silk-version = "0.1.0-dev.74+205aea3f5b2e"
+silk-version = "0.1.0-dev.85+45b9e51824ca"
 kind = "library"
 exports = ["image", "png", "jpeg", "orientation", "icc", "decode"]
-
-[profiles.jpeg-bench]
-main = "jpeg_bench.silk"
-artifact = "executable"
-optimization = "speed"
-debug = false
