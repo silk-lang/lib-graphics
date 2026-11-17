@@ -104,7 +104,7 @@ pub effect fn rendererBenchmark() -> ()
     let primitives = run benchmarks.metric(output, "primitives")
     let mut writer = StdoutWriter.make()
     run Format.format("dense scene: {primitives} primitives, 1280 x 800 BGRA8\n", &.{ primitives: primitives }) |> Effect.provideMut<Writer>(&mut writer)
-    let stages = ["build", "encode", "frame"]
+    let stages = ["build", "encode", "frame", "layers-frame"]
     let mut at: usize = 0
     let mut exceeded = false
     while at < stages.length {

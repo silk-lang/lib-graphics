@@ -834,6 +834,142 @@ pub effect fn dense(
   }
 }
 
+/// Plain layers, which the GPU renderer draws into shared pages: neighbours, a stack that
+/// overlaps, a rounded mask, a turned card with a faded layer inside, and a faded group holding
+/// a multiplied and a blurred layer.
+pub effect fn pages(scene: &mut Scene) -> ()
+  ! OutOfMemoryError
+  ? &mut Allocator {
+  drop run scene.quad(
+    Quad.fill(
+      rect(0.0, 0.0, 240.0, 180.0),
+      window(),
+      Background.linear(0.0, color.rgb(0xe0f2fe), color.rgb(0xfce7f3)),
+    ),
+  )
+  // Neighbours share a page.
+  let mut i: u32 = 0
+  while i < 4 {
+    let x = 8.0 + u32.toF32(i) * 28.0
+    drop run scene.pushIsolatedLayer(
+      rect(x, 8.0, 24.0, 30.0),
+      window(),
+      Isolation { opacity: 0.4 + u32.toF32(i) * 0.2, blend: 0 },
+    )
+    drop run scene.quad(rounded(rect(x, 8.0, 24.0, 30.0), 6.0, Background.solid(color.rgb(0x7c3aed))))
+    drop run scene.quad(rounded(rect(x + 6.0, 14.0, 12.0, 12.0), 6.0, Background.solid(color.rgb(0xfacc15))))
+    run scene.popLayer()
+    i = i + 1
+  }
+  // A stack: each layer overlaps the one before, so each takes a page of its own.
+  i = 0
+  while i < 3 {
+    let at = rect(130.0 + u32.toF32(i) * 22.0, 8.0 + u32.toF32(i) * 10.0, 50.0, 40.0)
+    drop run scene.pushIsolatedLayer(at, window(), Isolation { opacity: 0.7, blend: 0 })
+    drop run scene.quad(
+      rounded(at, 8.0, Background.linear(90.0, color.rgb(0xf97316), color.rgb(0x0ea5e9))),
+    )
+    run scene.popLayer()
+    i = i + 1
+  }
+  // A rounded mask over content that overflows it.
+  drop run scene.pushIsolatedLayer(
+    rect(10.0, 50.0, 90.0, 56.0),
+    window(),
+    Isolation { opacity: 0.9, blend: 0 },
+  )
+  drop run scene.pushMaskLayer()
+  drop run scene.quad(rounded(rect(14.0, 54.0, 80.0, 46.0), 18.0, Background.solid(color.rgb(0x000000))))
+  run scene.popLayer()
+  drop run scene.quad(
+    Quad.fill(
+      rect(10.0, 50.0, 90.0, 56.0),
+      window(),
+      Background.linear(90.0, color.rgb(0x22c55e), color.rgb(0x1d4ed8)),
+    ),
+  )
+  drop run scene.quad(rounded(rect(60.0, 40.0, 60.0, 40.0), 20.0, Background.solid(color.rgb(0xffffff))))
+  run scene.popLayer()
+  // Turned 20 degrees about (60, 140), with a faded layer inside.
+  let c: f32 = 0.9396926
+  let n: f32 = 0.34202015
+  drop run scene.pushTransformLayer(
+    rect(20.0, 115.0, 80.0, 50.0),
+    window(),
+    Isolation { opacity: 1.0, blend: 0 },
+    Matrix3<f32>.new(
+      [c, n, 0.0, -n, c, 0.0, 60.0 - c * 60.0 + n * 140.0, 140.0 - n * 60.0 - c * 140.0, 1.0],
+    ),
+  )
+  drop run scene.quad(rounded(rect(20.0, 115.0, 80.0, 50.0), 10.0, Background.solid(color.rgb(0xdc2626))))
+  drop run scene.pushIsolatedLayer(
+    rect(30.0, 125.0, 40.0, 30.0),
+    window(),
+    Isolation { opacity: 0.5, blend: 0 },
+  )
+  drop run scene.quad(rounded(rect(30.0, 125.0, 30.0, 20.0), 4.0, Background.solid(color.rgb(0xffffff))))
+  drop run scene.quad(rounded(rect(40.0, 135.0, 30.0, 20.0), 4.0, Background.solid(color.rgb(0x111827))))
+  run scene.popLayer()
+  run scene.popLayer()
+  // A faded group holding layers composited the slow way, beside a plain neighbour.
+  drop run scene.pushIsolatedLayer(
+    rect(120.0, 90.0, 110.0, 80.0),
+    window(),
+    Isolation { opacity: 0.8, blend: 0 },
+  )
+  drop run scene.quad(rounded(rect(124.0, 94.0, 102.0, 72.0), 10.0, Background.solid(color.rgb(0xfde68a))))
+  drop run scene.pushIsolatedLayer(
+    rect(130.0, 100.0, 50.0, 40.0),
+    window(),
+    Isolation { opacity: 1.0, blend: BLEND_MULTIPLY },
+  )
+  drop run scene.quad(rounded(rect(130.0, 100.0, 50.0, 40.0), 20.0, Background.solid(color.rgb(0x06b6d4))))
+  run scene.popLayer()
+  let mut soft = LayerEffects.none()
+  soft.blur = 3.0
+  drop run scene.pushEffectLayer(
+    rect(165.0, 115.0, 60.0, 50.0),
+    window(),
+    Isolation { opacity: 1.0, blend: 0 },
+    soft,
+  )
+  drop run scene.quad(rounded(rect(175.0, 125.0, 40.0, 30.0), 6.0, Background.solid(color.rgb(0xbe123c))))
+  run scene.popLayer()
+  run scene.popLayer()
+}
+
+/// A page of `columns` x `rows` cards, each a quad on the page with a faded isolated layer over
+/// it: many small layers on a large target, as a page of animated tiles has.
+pub effect fn tiledLayers(scene: &mut Scene, width: u32, height: u32, columns: u32, rows: u32) -> ()
+  ! OutOfMemoryError
+  ? &mut Allocator {
+  let all = ContentMask.new(rect(0.0, 0.0, u32.toF32(width), u32.toF32(height)))
+  drop run scene.quad(Quad.fill(all.bounds, all, Background.solid(color.rgb(0xf8fafc))))
+  let cw = u32.toF32(width) / u32.toF32(columns)
+  let ch = u32.toF32(height) / u32.toF32(rows)
+  let mut row: u32 = 0
+  while row < rows {
+    let mut column: u32 = 0
+    while column < columns {
+      let card = rect(u32.toF32(column) * cw + 8.0, u32.toF32(row) * ch + 8.0, cw - 16.0, ch - 16.0)
+      let mut q = Quad.fill(card, all, Background.solid(color.white()))
+      q.cornerRadii = Corners<f32>.uniform(12.0)
+      drop run scene.quad(q)
+      drop run scene.pushIsolatedLayer(card, all, Isolation { opacity: 0.8, blend: 0 })
+      let mut inner = Quad.fill(
+        rect(card.xMin + 16.0, card.yMin + 16.0, card.width() - 32.0, card.height() - 32.0),
+        all,
+        Background.linear(90.0, color.rgb(0x6366f1), color.rgb(0x14b8a6)),
+      )
+      inner.cornerRadii = Corners<f32>.uniform(8.0)
+      drop run scene.quad(inner)
+      run scene.popLayer()
+      column = column + 1
+    }
+    row = row + 1
+  }
+}
+
 /// Layer blur, color filters and clipped backdrop blur for CPU/GPU comparison.
 pub effect fn effects(scene: &mut Scene) -> ()
   ! OutOfMemoryError
