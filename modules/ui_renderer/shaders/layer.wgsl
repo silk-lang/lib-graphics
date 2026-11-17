@@ -7,7 +7,9 @@
 // target pixel back to a layer pixel, within the layer pixels `source` (x0, y0, x1, y1).
 struct Params {
   op: u32, mode: u32, opacity: u32, backdropEnabled: u32, clip: vec4f, radius: f32, shape: u32, unused: vec2u,
-  inverse0: vec4f, inverse1: vec4f, inverse2: vec4f, source: vec4f, mapped: u32, masked: u32, pad1: u32, pad2: u32,
+  inverse0: vec4f, inverse1: vec4f, inverse2: vec4f, source: vec4f, mapped: u32, masked: u32, rounded: u32, pad2: u32,
+  // The content mask the layer lands in; its rounded corners clip the layer (radii tl, tr, br, bl).
+  maskBounds: vec4f, maskRadii: vec4f,
 }
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var backdrop: texture_2d<f32>;
@@ -51,6 +53,27 @@ fn mappedBytes(position: vec2f) -> vec4u {
   return vec4u(round(clamp(mix(top, bottom, t.y), vec4f(0.0), vec4f(255.0))));
 }
 
+// How much of the pixel at `p` the mask's rounded corners keep (common.wgsl's cornerCoverage).
+fn corner(p: vec2f) -> f32 {
+  let radii = params.maskRadii;
+  let r = params.maskBounds;
+  let half = (r.zw - r.xy) * 0.5;
+  let q = p - (r.xy + half);
+  var picked = select(radii.z, radii.y, q.y < 0.0);
+  if q.x < 0.0 { picked = select(radii.w, radii.x, q.y < 0.0); }
+  let radius = clamp(picked, 0.0, max(min(half.x, half.y), 0.0));
+  if radius <= 0.0 { return 1.0; }
+  let d = abs(q) - half + radius;
+  if d.x <= 0.0 || d.y <= 0.0 { return 1.0; }
+  return clamp(0.5 - (length(d) - radius), 0.0, 1.0);
+}
+
+// `s` scaled by `k` (0 to 1).
+fn scaled(s: vec4u, k: f32) -> vec4u {
+  if k >= 1.0 { return s; }
+  return vec4u(round(vec4f(s) * k));
+}
+
 // `s` times the group opacity.
 fn faded(s: vec4u) -> vec4u {
   return vec4u(div255(s.x * params.opacity), div255(s.y * params.opacity), div255(s.z * params.opacity), div255(s.w * params.opacity));
@@ -65,6 +88,7 @@ fn faded(s: vec4u) -> vec4u {
     content = inMask(content, pixel);
   }
   if params.op == OP_COPY { return vec4f(content) / 255.0; }
+  if params.rounded != 0u { content = scaled(content, corner(position.xy)); }
   if params.op == OP_BLIT {
     if params.opacity == 255u { return vec4f(content) / 255.0; }
     return vec4f(faded(content)) / 255.0;

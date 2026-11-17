@@ -7,6 +7,7 @@ struct MonoSprite {
   // straight alpha
   color: vec4f,
   tile: vec4f,
+  maskRadii: vec4f,
 }
 @group(0) @binding(1) var<storage, read> sprites: array<MonoSprite>;
 
@@ -33,7 +34,7 @@ fn correctText(alpha: f32, color: vec3f) -> f32 {
   let s = sprites[v.index];
   let p = v.position.xy;
   let clipped = vec4f(max(s.mask.xy, s.bounds.xy), min(s.mask.zw, s.bounds.zw));
-  let clip = areaIn(clipped, p);
+  let clip = areaIn(clipped, p) * cornerCoverage(s.mask, s.maskRadii, p);
   if clip <= 0.0 { discard; }
   let sample = sampleTile(s.tile, s.bounds, p).r;
   let alpha = clamp(correctText(sample, clamp(s.color.rgb, vec3f(0.0), vec3f(1.0))), 0.0, 1.0);

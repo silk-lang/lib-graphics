@@ -938,6 +938,52 @@ pub effect fn pages(scene: &mut Scene) -> ()
   run scene.popLayer()
 }
 
+/// Content clipped by rounded content masks, as `overflow: hidden` with `border-radius` clips:
+/// a gradient, glyphs, an underline and a shadow running past the corners, a mask nested in a
+/// smaller one, and a faded and a turned layer landing in a rounded mask.
+pub effect fn roundedMasks(scene: &mut Scene, tiles: &mut Tiles) -> ()
+  ! AtlasError | OutOfMemoryError
+  ? &mut Allocator {
+  let glyph = run glyphTile(&mut tiles)
+  drop run scene.quad(Quad.fill(rect(0.0, 0.0, 240.0, 180.0), window(), Background.solid(color.rgb(0xf8fafc))))
+  let card = ContentMask.rounded(rect(10.0, 10.0, 100.0, 76.0), Corners<f32>.new(24.0, 10.0, 30.0, 0.0))
+  drop run scene.quad(
+    Quad.fill(rect(0.0, 0.0, 120.0, 96.0), card, Background.linear(135.0, color.rgb(0x7c3aed), color.rgb(0xf472b6))),
+  )
+  let mut g: u32 = 0
+  while g < 14 {
+    drop run scene.glyph(
+      GlyphSprite { bounds: rect(4.0 + u32.toF32(g) * 8.0, 12.0, 7.0, 9.0), mask: card, tile: glyph, color: color.rgb(0xffffff) },
+    )
+    g = g + 1
+  }
+  drop run scene.underline(
+    Underline { bounds: rect(0.0, 80.0, 120.0, 4.0), mask: card, color: color.rgb(0xfacc15), thickness: 3.0, wavy: false },
+  )
+  let mut s = shadow(rect(80.0, 50.0, 40.0, 40.0), 6.0, 0.0, 0.0, 0.0, color.rgba(0x000000a0), false)
+  s.mask = card
+  drop run scene.shadow(s)
+  // A mask inside another: the inner one's square corner at the bottom left rounds by the outer.
+  let outer = ContentMask.rounded(rect(130.0, 10.0, 100.0, 76.0), Corners<f32>.uniform(20.0))
+  let inner = outer.intersect(ContentMask.new(rect(120.0, 30.0, 70.0, 70.0)))
+  drop run scene.quad(Quad.fill(rect(120.0, 0.0, 120.0, 100.0), inner, Background.solid(color.rgb(0x0ea5e9))))
+  // A faded layer and a turned layer, both landing in a rounded mask.
+  let tile = ContentMask.rounded(rect(10.0, 96.0, 220.0, 76.0), Corners<f32>.uniform(26.0))
+  drop run scene.pushIsolatedLayer(rect(0.0, 90.0, 120.0, 90.0), tile, Isolation { opacity: 0.6, blend: 0 })
+  drop run scene.quad(Quad.fill(rect(0.0, 90.0, 120.0, 90.0), window(), Background.solid(color.rgb(0x16a34a))))
+  run scene.popLayer()
+  let c: f32 = 0.9396926
+  let n: f32 = 0.34202015
+  drop run scene.pushTransformLayer(
+    rect(130.0, 90.0, 110.0, 90.0),
+    tile,
+    Isolation { opacity: 1.0, blend: 0 },
+    Matrix3<f32>.new([c, n, 0.0, -n, c, 0.0, 185.0 - c * 185.0 + n * 135.0, 135.0 - n * 185.0 - c * 135.0, 1.0]),
+  )
+  drop run scene.quad(Quad.fill(rect(130.0, 90.0, 110.0, 90.0), window(), Background.solid(color.rgb(0xdc2626))))
+  run scene.popLayer()
+}
+
 /// A page of `columns` x `rows` cards, each a quad on the page with a faded isolated layer over
 /// it: many small layers on a large target, as a page of animated tiles has.
 pub effect fn tiledLayers(scene: &mut Scene, width: u32, height: u32, columns: u32, rows: u32) -> ()

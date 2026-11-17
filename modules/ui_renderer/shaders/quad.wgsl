@@ -9,6 +9,7 @@ struct Quad {
   // straight alpha; `paint.kind.z` is 1 for a dashed border
   borderColor: vec4f,
   paint: Paint,
+  maskRadii: vec4f,
 }
 @group(0) @binding(1) var<storage, read> quads: array<Quad>;
 
@@ -92,7 +93,7 @@ fn dashCoverage(s: f32, w: f32) -> f32 {
 @fragment fn fs(v: Varying) -> @location(0) vec4f {
   let q = quads[v.index];
   let p = v.position.xy;
-  let clip = areaIn(q.mask, p);
+  let clip = areaIn(q.mask, p) * cornerCoverage(q.mask, q.maskRadii, p);
   if clip <= 0.0 { discard; }
   let radii = clampedRadii(q.bounds, q.radii);
   let outer = coverage(roundedRectSdf(p, q.bounds, radii));
