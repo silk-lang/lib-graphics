@@ -104,7 +104,8 @@ fn coverage(distance: f32) -> f32 {
 // gradient mixed here in sRGB, 2 for one read from ramp `kind.y` of `ramps` (any other
 // interpolation, sampled on the CPU with silk.color), 3 for a gradient with any number of stops
 // mixed here in sRGB: `first.x` of them at word `kind.y` of `ramps`, five words each (the offset,
-// then the straight color), repeating when `first.y` is 1. `kind.w` is the shape: 0 linear,
+// then the straight color), repeating when `first.y` is 1. With any other interpolation `first.z`
+// is one more than the first of their ramps, one per pair of neighbours. `kind.w` is the shape: 0 linear,
 // 1 radial, 2 conic. For two stops `first` and `last` hold them, straight sRGB (`first` is the
 // solid color). `line` is the center and then the direction (linear), the reciprocal radii
 // (radial) or the start angle in turns (conic); `stops` holds the linear half length and the two
@@ -182,6 +183,9 @@ fn shadeStops(paint: Paint, along: f32) -> vec4f {
   if i + 1u >= n || a < first { return mixPremultiplied(stopColor(base, i), stopColor(base, i), 0.0); }
   let lo = stopOffset(base, i);
   let t = (a - lo) / (stopOffset(base, i + 1u) - lo);
-  let step = floor(clamp(t, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
-  return mixPremultiplied(stopColor(base, i), stopColor(base, i + 1u), step);
+  let step = floor(clamp(t, 0.0, 1.0) * 255.0 + 0.5);
+  if paint.first.z > 0.5 {
+    return unpack4x8unorm(ramps[(u32(paint.first.z) - 1u + i) * 256u + u32(step)]);
+  }
+  return mixPremultiplied(stopColor(base, i), stopColor(base, i + 1u), step / 255.0);
 }

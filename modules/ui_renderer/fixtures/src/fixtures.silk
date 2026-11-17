@@ -653,6 +653,32 @@ pub effect fn gradients(scene: &mut Scene) -> ()
   }
 }
 
+fn stopsIn(
+  shape: GradientShape,
+  angle: f32,
+  cx: f32,
+  cy: f32,
+  rx: f32,
+  ry: f32,
+  repeating: bool,
+  range: StopRange,
+  interpolation: Interpolation,
+) -> Background {
+  return Background.Stops {
+    gradient: StopsGradient {
+      shape: shape,
+      angle: angle,
+      centerX: cx,
+      centerY: cy,
+      radiusX: rx,
+      radiusY: ry,
+      repeating: repeating,
+      stops: range,
+      interpolation: interpolation,
+    },
+  }
+}
+
 fn stopsPaint(
   shape: GradientShape,
   angle: f32,
@@ -673,6 +699,7 @@ fn stopsPaint(
       radiusY: ry,
       repeating: repeating,
       stops: range,
+      interpolation: Interpolation.new(ColorSpace.Srgb),
     },
   }
 }
@@ -760,6 +787,79 @@ pub effect fn manyStops(scene: &mut Scene) -> ()
     drop run cache.fill(&mut scene, u32.toU64(k), &shape, &place, NONZERO, paint, window())
     k = k + 1
   }
+}
+
+/// Gradients with many stops mixed in CSS Color 4 spaces other than sRGB: Oklab, Oklch along each
+/// hue arc, Lab, HSL, linear sRGB and Display P3, with hard edges, translucent stops and
+/// repeating runs, on quads and a path.
+pub effect fn interpolatedStops(scene: &mut Scene) -> ()
+  ! GeometryError | OutOfMemoryError
+  ? &mut Allocator {
+  drop run scene.quad(
+    Quad.fill(rect(0.0, 0.0, 240.0, 180.0), window(), Background.solid(color.rgb(0xf8fafc))),
+  )
+  let three = run scene.colorStops(
+    &[
+      ColorStop { color: color.rgb(0x2563eb), offset: 0.0 },
+      ColorStop { color: color.rgb(0xffffff), offset: 0.5 },
+      ColorStop { color: color.rgb(0xdc2626), offset: 1.0 },
+    ],
+  )
+  let fade = run scene.colorStops(
+    &[
+      ColorStop { color: color.rgb(0xfacc15), offset: 0.0 },
+      ColorStop { color: color.rgba(0x7c3aed80), offset: 0.45 },
+      ColorStop { color: color.rgba(0x7c3aed80), offset: 0.6 },
+      ColorStop { color: color.rgba(0x0ea5e900), offset: 1.0 },
+    ],
+  )
+  let edge = run scene.colorStops(
+    &[
+      ColorStop { color: color.rgb(0xef4444), offset: 0.0 },
+      ColorStop { color: color.rgb(0x22c55e), offset: 0.5 },
+      ColorStop { color: color.rgb(0x3b82f6), offset: 0.5 },
+      ColorStop { color: color.rgb(0x000000), offset: 1.0 },
+    ],
+  )
+  let stripe = run scene.colorStops(
+    &[
+      ColorStop { color: color.rgb(0x06b6d4), offset: 0.0 },
+      ColorStop { color: color.rgb(0xd946ef), offset: 0.15 },
+    ],
+  )
+  let spaces = [
+    Interpolation.new(ColorSpace.Oklab),
+    Interpolation.withHue(ColorSpace.Oklch, HueInterpolation.Shorter),
+    Interpolation.withHue(ColorSpace.Oklch, HueInterpolation.Longer),
+    Interpolation.new(ColorSpace.Lab),
+    Interpolation.withHue(ColorSpace.Hsl, HueInterpolation.Increasing),
+    Interpolation.withHue(ColorSpace.Lch, HueInterpolation.Decreasing),
+    Interpolation.new(ColorSpace.SrgbLinear),
+    Interpolation.new(ColorSpace.DisplayP3),
+  ]
+  let shapes = [GradientShape.Linear, GradientShape.Radial, GradientShape.Conic, GradientShape.Linear]
+  let ranges = [three, fade, edge, stripe]
+  let mut i: usize = 0
+  while i < 8 {
+    let x = 6.0 + usize.toF32(i % 4) * 58.0
+    let y = 6.0 + usize.toF32(i / 4) * 58.0
+    let k = (i + i / 4) % 4
+    let mut q = rounded(
+      rect(x, y, 52.0, 52.0),
+      usize.toF32(i % 3) * 6.0,
+      stopsIn(shapes[k], 30.0 + usize.toF32(i) * 20.0, 21.7, 26.2, 30.0, 24.0, k == 3, ranges[k], spaces[i]),
+    )
+    q.borderWidths = Insets<f32>.uniform(1.0)
+    q.borderColor = color.rgba(0x0f172a40)
+    drop run scene.quad(q)
+    i = i + 1
+  }
+  let mut cache = PathCache.make()
+  run cache.beginFrame()
+  let shape = run star(5, 26.0)
+  let place = Affine.new(1.0, 0.0, 0.0, 1.0, 60.0, 148.0)
+  let paint = stopsIn(GradientShape.Conic, 0.0, 26.0, 26.0, 0.0, 0.0, false, three, spaces[2])
+  drop run cache.fill(&mut scene, 0, &shape, &place, NONZERO, paint, window())
 }
 
 /// Every coverage level drawn as text in black, white and a mid gray, at the tile's own size.
