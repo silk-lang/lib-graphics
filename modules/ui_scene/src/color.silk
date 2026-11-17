@@ -5,7 +5,10 @@
 //! [`rgb`] and [`rgba`], or from any `silk.color.color.Color` (Oklch, Display P3, HSL, ...) with
 //! [`fromColor`], which maps the color into the sRGB gamut. Gradients interpolate their stops with
 //! `silk.color` in any CSS Color 4 interpolation space ([`mix`]).
+import silk.collections.list { List }
 import silk.color.color { Color, ColorSpace, Interpolation }
+import silk.core.ownership { Copy }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
 import silk.color.rgba { Rgba }
 import silk.num.f32
 import silk.num.f64
@@ -95,6 +98,66 @@ pub fn isSrgb(interpolation: Interpolation) -> bool {
 /// [`mixPrepared`] at `step / 255`, as packed premultiplied bytes.
 pub fn rampEntry(from: Color, to: Color, step: u32, interpolation: Interpolation) -> u32 {
   return pack(toPremultipliedRgba8(mixPrepared(from, to, u32.toF32(step) / 255.0, interpolation)))
+}
+
+struct RampKey {
+  from: Rgba<f32>,
+  to: Rgba<f32>,
+  interpolation: Interpolation,
+}
+
+impl Copy for RampKey {}
+
+fn sameColor(a: Rgba<f32>, b: Rgba<f32>) -> bool {
+  return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a
+}
+
+/// 256-entry ramps ([`rampEntry`] at every step) kept across frames: a ramp outside sRGB costs
+/// about 270k instructions to sample, and a frame usually draws the same gradients as the last.
+pub struct RampCache {
+  keys: List<RampKey>,
+  words: List<u32>,
+}
+
+impl RampCache {
+  pub fn make() -> RampCache {
+    return RampCache { keys: List<RampKey>.make(), words: List<u32>.make() }
+  }
+
+  /// The ramp from `from` to `to`: entry `step` is `self.word(start + step)` for the returned
+  /// `start`. Building one may forget all the others.
+  pub effect fn ramp(self: &mut Self, from: Rgba<f32>, to: Rgba<f32>, interpolation: Interpolation) -> usize
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    let keys = self.keys.asSlice()
+    let mut i: usize = 0
+    while i < keys.length {
+      let k = keys[i]
+      if sameColor(k.from, from) && sameColor(k.to, to) && k.interpolation.space == interpolation.space
+        && k.interpolation.hue == interpolation.hue {
+        return i * 256
+      }
+      i = i + 1
+    }
+    if self.keys.length() >= 256 {
+      self.keys.clear()
+      self.words.clear()
+    }
+    let start = self.words.length()
+    run self.keys.append(RampKey { from: from, to: to, interpolation: interpolation })
+    let a = prepare(from, interpolation.space)
+    let b = prepare(to, interpolation.space)
+    let mut step: u32 = 0
+    while step < 256 {
+      run self.words.append(rampEntry(a, b, step, interpolation))
+      step = step + 1
+    }
+    return start
+  }
+
+  pub fn word(self: &Self, at: usize) -> u32 {
+    return self.words.get(at)
+  }
 }
 
 fn clampUnit(value: f32) -> f32 {

@@ -33,6 +33,7 @@ import vector.pixmap { Pixmap, Rgba8, overPacked, pack, scalePacked }
 import vector.strips { Coverage, NONZERO, Rasterizer }
 import vector.stroke { CAP_BUTT, JOIN_ROUND, Stroke, Stroker }
 import color
+import color { RampCache }
 import silk.color.color { Interpolation }
 import silk.color.rgba { Rgba }
 import primitives {
@@ -328,6 +329,7 @@ struct Painter {
   shape: u32,
   color: u32,
   ramp: List<u32>,
+  ramps: RampCache,
   stops: List<ColorStop>,
   repeating: bool,
   cx: f32,
@@ -361,6 +363,7 @@ impl Painter {
       shape: LINEAR,
       color: 0,
       ramp: List<u32>.make(),
+      ramps: RampCache.make(),
       stops: List<ColorStop>.make(),
       repeating: false,
       cx: 0.0,
@@ -446,24 +449,21 @@ impl Painter {
     while i + 1 < n {
       let a = self.stops.get(i)
       let b = self.stops.get(i + 1)
-      let same = a.color.r == b.color.r && a.color.g == b.color.g && a.color.b == b.color.b
-        && a.color.a == b.color.a
-      let from = color.prepare(a.color, interpolation.space)
-      let to = color.prepare(b.color, interpolation.space)
-      let flat = if b.offset > a.offset && same {
-        pack(color.toPremultipliedRgba8(a.color))
-      } else {
-        0
-      }
-      let mut step: u32 = 0
-      while step < 256 {
-        let entry = if b.offset > a.offset && !same {
-          color.rampEntry(from, to, step, interpolation)
-        } else {
-          flat
+      if b.offset > a.offset && !(a.color.r == b.color.r && a.color.g == b.color.g
+        && a.color.b == b.color.b && a.color.a == b.color.a) {
+        let start = run self.ramps.ramp(a.color, b.color, interpolation)
+        let mut step: usize = 0
+        while step < 256 {
+          run self.ramp.append(self.ramps.word(start + step))
+          step = step + 1
         }
-        run self.ramp.append(entry)
-        step = step + 1
+      } else {
+        let flat = pack(color.toPremultipliedRgba8(a.color))
+        let mut step: usize = 0
+        while step < 256 {
+          run self.ramp.append(flat)
+          step = step + 1
+        }
       }
       i = i + 1
     }
