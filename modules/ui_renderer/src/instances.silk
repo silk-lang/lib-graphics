@@ -33,17 +33,17 @@ import vector.pixmap { pack }
 import vector.strips { Fill, Strip }
 
 /// Bytes per instance of each kind, matching the structs in `shaders/`.
-pub const QUAD_BYTES: usize = 160
+pub const QUAD_BYTES: usize = 176
 
-pub const SHADOW_BYTES: usize = 128
+pub const SHADOW_BYTES: usize = 144
 
-pub const UNDERLINE_BYTES: usize = 64
+pub const UNDERLINE_BYTES: usize = 80
 
-pub const MONO_BYTES: usize = 64
+pub const MONO_BYTES: usize = 80
 
-pub const POLY_BYTES: usize = 96
+pub const POLY_BYTES: usize = 112
 
-pub const PATH_BYTES: usize = 96
+pub const PATH_BYTES: usize = 112
 
 pub const RUN_BYTES: usize = 32
 
@@ -267,6 +267,7 @@ effect fn packQuad(scene: &Scene, bytes: &mut List<u8>, ramps: &mut List<u8>, q:
     BorderStyle.Dashed => true
   }
   run pushPaint(scene, &mut bytes, &mut ramps, q.background, q.bounds, dashed)
+  run pushCorners(&mut bytes, q.mask.radii)
 }
 
 effect fn packShadow(bytes: &mut List<u8>, s: Shadow) -> ()
@@ -290,6 +291,7 @@ effect fn packShadow(bytes: &mut List<u8>, s: Shadow) -> ()
     0.0,
     0.0,
   )
+  run pushCorners(&mut bytes, s.mask.radii)
 }
 
 effect fn packUnderline(bytes: &mut List<u8>, u: Underline) -> ()
@@ -309,6 +311,7 @@ effect fn packUnderline(bytes: &mut List<u8>, u: Underline) -> ()
     0.0,
     0.0,
   )
+  run pushCorners(&mut bytes, u.mask.radii)
 }
 
 effect fn pushTile(bytes: &mut List<u8>, r: Rect<u32>) -> ()
@@ -324,6 +327,7 @@ effect fn packGlyph(bytes: &mut List<u8>, g: GlyphSprite) -> ()
   run pushRect(&mut bytes, g.mask.bounds)
   run pushColor(&mut bytes, g.color)
   run pushTile(&mut bytes, g.tile.bounds)
+  run pushCorners(&mut bytes, g.mask.radii)
 }
 
 effect fn packImage(bytes: &mut List<u8>, s: ImageSprite) -> ()
@@ -345,6 +349,7 @@ effect fn packImage(bytes: &mut List<u8>, s: ImageSprite) -> ()
     u32.toF32(s.quarterTurns % 4),
     0.0,
   )
+  run pushCorners(&mut bytes, s.mask.radii)
 }
 
 /// One frame's instances, ready to upload.
@@ -485,6 +490,7 @@ impl Instances {
     run self.pathRuns.append(firstRun)
     run pushRect(&mut self.paths, p.mask.bounds)
     run pushPaint(scene, &mut self.paths, &mut self.ramps, p.paint, p.paintBounds, false)
+    run pushCorners(&mut self.paths, p.mask.radii)
     let bottom = p.y + u32.toI32(p.height)
     let mut s = u32.toUsize(p.stripStart)
     while s < u32.toUsize(p.stripStart + p.stripCount) {

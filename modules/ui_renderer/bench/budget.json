@@ -1,6 +1,7 @@
 {
-  "comment": "Frame-time budget for the dense benchmark on lavapipe (software Vulkan), in milliseconds. Measured on 2026-11-02 in a 4-core cloud container: build 3.9, encode 1.2, frame 70.6. Budgets leave room for slower CI runners; tighten them when the numbers settle.",
+  "comment": "Frame-time budget for the dense benchmark on lavapipe (software Vulkan), in milliseconds. Measured on 2026-11-02 in a 4-core cloud container: build 3.9, encode 1.2, frame 70.6. The layers frame (50 isolated layers, 2080 x 1440) measured 37.4 on 2026-11-17. Budgets leave room for slower CI runners; tighten them when the numbers settle.",
   "build": 20.0,
   "encode": 8.0,
-  "frame": 300.0
+  "frame": 300.0,
+  "layers-frame": 250.0
 }

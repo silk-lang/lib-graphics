@@ -22,9 +22,13 @@ import silk.color.color { ColorSpace, Interpolation }
 import silk.color.rgba { Rgba }
 import color
 
-/// The clip rectangle of a primitive.
+/// The clip of a primitive: a rectangle, with rounded corners when `radii` are not zero (as an
+/// `overflow: hidden` box with `border-radius` clips its content). Radii are clamped to half the
+/// shorter side when used.
 pub struct ContentMask {
   pub bounds: Rect<f32>,
+  /// Top-left, top-right, bottom-right, bottom-left, in device pixels.
+  pub radii: Corners<f32>,
 }
 
 impl Copy for ContentMask {}
@@ -32,20 +36,101 @@ impl Copy for ContentMask {}
 impl ContentMask {
   /// A mask that clips to `bounds`.
   pub fn new(bounds: Rect<f32>) -> ContentMask {
-    return ContentMask { bounds: bounds }
+    return ContentMask { bounds: bounds, radii: Corners<f32>.zero() }
+  }
+
+  /// A mask that clips to `bounds` with corner radii `radii`.
+  pub fn rounded(bounds: Rect<f32>, radii: Corners<f32>) -> ContentMask {
+    return ContentMask { bounds: bounds, radii: radii }
+  }
+
+  /// Whether any corner is rounded.
+  pub fn isRounded(self: Self) -> bool {
+    return self.radii.topLeft > 0.0 || self.radii.topRight > 0.0 || self.radii.bottomRight > 0.0
+      || self.radii.bottomLeft > 0.0
+  }
+
+  /// The mask moved by `dx`, `dy`.
+  pub fn moved(self: Self, dx: f32, dy: f32) -> ContentMask {
+    return ContentMask {
+      bounds: Rect<f32>.new(self.bounds.xMin + dx, self.bounds.yMin + dy, self.bounds.xMax + dx, self.bounds.yMax + dy),
+      radii: self.radii,
+    }
   }
 
   /// The intersection of two masks, as a nested scroll view clips its children. Disjoint masks
-  /// give an empty mask, which hides everything.
+  /// give an empty mask, which hides everything. Each corner keeps the larger rounding left of
+  /// either mask's corner there, shrunk by how far the result's corner lies inside it: exact
+  /// when one mask's corners lie inside the other's straight edges.
   pub fn intersect(self: Self, other: ContentMask) -> ContentMask {
+    let bounds = Rect<f32>.new(
+      f32.max(self.bounds.xMin, other.bounds.xMin),
+      f32.max(self.bounds.yMin, other.bounds.yMin),
+      f32.min(self.bounds.xMax, other.bounds.xMax),
+      f32.min(self.bounds.yMax, other.bounds.yMax),
+    )
+    if !self.isRounded() && !other.isRounded() {
+      return ContentMask.new(bounds)
+    }
+    let a = self.insetTo(bounds)
+    let b = other.insetTo(bounds)
     return ContentMask {
-      bounds: Rect<f32>.new(
-        f32.max(self.bounds.xMin, other.bounds.xMin),
-        f32.max(self.bounds.yMin, other.bounds.yMin),
-        f32.min(self.bounds.xMax, other.bounds.xMax),
-        f32.min(self.bounds.yMax, other.bounds.yMax),
+      bounds: bounds,
+      radii: Corners<f32>.new(
+        f32.max(a.topLeft, b.topLeft),
+        f32.max(a.topRight, b.topRight),
+        f32.max(a.bottomRight, b.bottomRight),
+        f32.max(a.bottomLeft, b.bottomLeft),
       ),
     }
+  }
+
+  /// The radii left at the corners of `inner`, a rectangle inside the mask.
+  fn insetTo(self: Self, inner: Rect<f32>) -> Corners<f32> {
+    if !self.isRounded() {
+      return Corners<f32>.zero()
+    }
+    let left = inner.xMin - self.bounds.xMin
+    let top = inner.yMin - self.bounds.yMin
+    let right = self.bounds.xMax - inner.xMax
+    let bottom = self.bounds.yMax - inner.yMax
+    return Corners<f32>.new(
+      f32.max(0.0, self.radii.topLeft - f32.max(left, top)),
+      f32.max(0.0, self.radii.topRight - f32.max(right, top)),
+      f32.max(0.0, self.radii.bottomRight - f32.max(right, bottom)),
+      f32.max(0.0, self.radii.bottomLeft - f32.max(left, bottom)),
+    )
+  }
+
+  /// How much of the pixel centered at `x`, `y` the rounded corners keep, from 0 to 1 (1 for an
+  /// unrounded mask; the rectangle itself is left to the caller's area test). Matches the GPU's
+  /// `roundedCoverage`.
+  pub fn cornerCoverage(self: Self, x: f32, y: f32) -> f32 {
+    if !self.isRounded() {
+      return 1.0
+    }
+    let r = self.bounds
+    let hx = (r.xMax - r.xMin) * 0.5
+    let hy = (r.yMax - r.yMin) * 0.5
+    let qx = x - (r.xMin + hx)
+    let qy = y - (r.yMin + hy)
+    let limit = f32.max(f32.min(hx, hy), 0.0)
+    let picked = if qx < 0.0 {
+      if qy < 0.0 { self.radii.topLeft } else { self.radii.bottomLeft }
+    } else {
+      if qy < 0.0 { self.radii.topRight } else { self.radii.bottomRight }
+    }
+    let radius = f32.min(f32.max(picked, 0.0), limit)
+    if radius <= 0.0 {
+      return 1.0
+    }
+    let dx = f32.abs(qx) - hx + radius
+    let dy = f32.abs(qy) - hy + radius
+    if dx <= 0.0 || dy <= 0.0 {
+      return 1.0
+    }
+    let distance = f32.sqrt(dx * dx + dy * dy) - radius
+    return f32.min(f32.max(0.5 - distance, 0.0), 1.0)
   }
 }
 
@@ -389,6 +474,9 @@ pub struct LayerSprite {
   /// layer holds. A transformed layer has no `effects`; it holds the pixels of `source`.
   pub transform: Matrix3<f32>,
   pub source: Rect<f32>,
+  /// The content mask the layer lands in: `bounds` already lies inside its rectangle, and its
+  /// rounded corners, if any, clip the composite.
+  pub clip: ContentMask,
 }
 
 impl Copy for LayerSprite {}

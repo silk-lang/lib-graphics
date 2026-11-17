@@ -14,6 +14,7 @@ struct Shadow {
   reach: vec4f,
   // sigma, inset (1 or 0)
   params: vec4f,
+  maskRadii: vec4f,
 }
 @group(0) @binding(1) var<storage, read> shadows: array<Shadow>;
 
@@ -52,7 +53,7 @@ fn blurAlongX(x: f32, y: f32, sigma: f32, radius: f32, half: vec2f) -> f32 {
 @fragment fn fs(v: Varying) -> @location(0) vec4f {
   let s = shadows[v.index];
   let p = v.position.xy;
-  let clip = areaIn(s.mask, p);
+  let clip = areaIn(s.mask, p) * cornerCoverage(s.mask, s.maskRadii, p);
   if clip <= 0.0 { discard; }
   let sigma = s.params.x;
   var alpha = 0.0;
