@@ -1,13 +1,16 @@
-//! Times a dense UI frame: `columns` x `rows` cards, each a drop shadow, a bordered rounded quad
-//! and two lines of glyphs, on a 1280 x 800 BGRA8 target (the common surface format).
+//! Times two UI frames. The dense one: `columns` x `rows` cards, each a drop shadow, a bordered
+//! rounded quad and two lines of glyphs, on a 1280 x 800 BGRA8 target (the common surface format).
+//! The layered one: 50 cards, each under a faded isolated layer, on a 2080 x 1440 target.
 //!
 //! Prints one `name value` line per measurement, the median over the timed frames in
 //! milliseconds: `build` (clear, paint and finish the scene on the CPU), `encode` (pack, upload
-//! and record the frame) and `frame` (encode, submit and wait for the GPU). `silk task bench ui-renderer`
-//! compares them with the recorded budget.
-import webgpu.runtime { GpuError, Instance, RequestAdapterOptions }
+//! and record the frame) and `frame` (encode, submit and wait for the GPU), then the same for the
+//! layered frame with `layers-` before each name. `silk task bench ui-renderer` compares them
+//! with the recorded budget.
+import webgpu.runtime { Device, GpuError, Instance, RequestAdapterOptions }
 import webgpu.runtime as runtime
 import webgpu.resources as gpu
+import webgpu.resources { Queue }
 import webgpu.descriptors {
   BufferDescriptor,
   DeviceDescriptor,
@@ -47,6 +50,15 @@ const ROWS: u32 = 20
 
 const GLYPHS: u32 = 9
 
+/// The layered frame: a window of 1040 x 720 on a 2x display, with 50 isolated layers.
+const LAYER_WIDTH: u32 = 2080
+
+const LAYER_HEIGHT: u32 = 1440
+
+const LAYER_COLUMNS: u32 = 10
+
+const LAYER_ROWS: u32 = 5
+
 const WARMUP: u32 = 3
 
 const FRAMES: u32 = 30
@@ -64,26 +76,28 @@ effect fn median(times: &mut List<i64>) -> f64
   return i64.toF64(times.asSlice()[times.length() / 2]) / 1000000.0
 }
 
-effect fn program() -> i32
+effect fn measure(
+  device: &Device,
+  queue: &Queue,
+  renderer: &mut UiRenderer,
+  format: u32,
+  width: u32,
+  height: u32,
+  layered: bool,
+) -> ()
   ! GpuError | OutOfMemoryError | AtlasError
   ? &mut Allocator | &mut MonotonicClock {
-  let instance = run Instance.create()
-  let adapter = run instance.requestAdapter(&RequestAdapterOptions.default())
-  let device = run adapter.requestDevice(&DeviceDescriptor.default())
-  let queue = run gpu.getQueue(&device)
-  let format = flags.WGPUTextureFormat_BGRA8Unorm
-  let mut renderer = run UiRenderer.make(&device, format)
   let mut descriptor = TextureDescriptor.default().withLabel(b"bench target")
-  descriptor.setSize(extent(WIDTH, HEIGHT))
+  descriptor.setSize(extent(width, height))
   descriptor.setFormat(format)
   descriptor.setDimension(flags.WGPUTextureDimension_2D)
   descriptor.setMipLevelCount(1)
   descriptor.setSampleCount(1)
   descriptor.setUsage(flags.WGPUTextureUsage_RenderAttachment | flags.WGPUTextureUsage_CopySrc)
-  let texture = run gpu.createTexture(&device, &descriptor)
+  let texture = run gpu.createTexture(device, &descriptor)
   let view = run texture.createView(&TextureViewDescriptor.default())
   let readback = run gpu.createBuffer(
-    &device,
+    device,
     &BufferDescriptor.make(
       b"bench sync",
       256,
@@ -102,29 +116,33 @@ effect fn program() -> i32
     let start = run MonotonicClock.now()
     scene.clear()
     let mut tiles = Tiles.make(AtlasOptions.default())
-    run fixtures.dense(&mut scene, &mut tiles, WIDTH, HEIGHT, COLUMNS, ROWS, GLYPHS)
+    if layered {
+      run fixtures.tiledLayers(&mut scene, width, height, LAYER_COLUMNS, LAYER_ROWS)
+    } else {
+      run fixtures.dense(&mut scene, &mut tiles, width, height, COLUMNS, ROWS, GLYPHS)
+    }
     run scene.finish()
     let built = run MonotonicClock.now()
     if frame == 0 {
-      run atlas.sync(&device, &tiles.atlas)
+      run atlas.sync(device, &tiles.atlas)
       let uploads = tiles.uploads.asSlice()
       let mut u: usize = 0
       while u < uploads.length {
-        atlas.write(&queue, uploads[u].tile, uploads[u].pixels.asSlice())
+        atlas.write(queue, uploads[u].tile, uploads[u].pixels.asSlice())
         u = u + 1
       }
       primitives = scene.primitiveCount()
     }
-    let mut encoder = run gpu.createCommandEncoder(&device, b"bench frame")
+    let mut encoder = run gpu.createCommandEncoder(device, b"bench frame")
     run renderer.encode(
-      &device,
-      &queue,
+      device,
+      queue,
       &mut encoder,
       &scene,
       &atlas,
       &view,
-      WIDTH,
-      HEIGHT,
+      width,
+      height,
       color.white(),
     )
     let encoded = run MonotonicClock.now()
@@ -141,7 +159,7 @@ effect fn program() -> i32
     drop source
     let commands = run encoder.finish(b"bench frame")
     queue.submit(&[commands.reference()])
-    drop run runtime.mapRead(&device, &readback, 0, 4)
+    drop run runtime.mapRead(device, &readback, 0, 4)
     let done = run MonotonicClock.now()
     if frame >= WARMUP {
       run builds.append(nanos(&start, &built))
@@ -151,10 +169,27 @@ effect fn program() -> i32
     frame = frame + 1
   }
   run device.checkErrors()
-  StderrWriter.print("primitives {}\n", &.(primitives))
-  StderrWriter.print("build {}\n", &.(run median(&mut builds)))
-  StderrWriter.print("encode {}\n", &.(run median(&mut encodes)))
-  StderrWriter.print("frame {}\n", &.(run median(&mut frames)))
+  let b = run median(&mut builds)
+  let e = run median(&mut encodes)
+  let f = run median(&mut frames)
+  if layered {
+    StderrWriter.print("layers-primitives {}\nlayers-build {}\nlayers-encode {}\nlayers-frame {}\n", &.(primitives, b, e, f))
+  } else {
+    StderrWriter.print("primitives {}\nbuild {}\nencode {}\nframe {}\n", &.(primitives, b, e, f))
+  }
+}
+
+effect fn program() -> i32
+  ! GpuError | OutOfMemoryError | AtlasError
+  ? &mut Allocator | &mut MonotonicClock {
+  let instance = run Instance.create()
+  let adapter = run instance.requestAdapter(&RequestAdapterOptions.default())
+  let device = run adapter.requestDevice(&DeviceDescriptor.default())
+  let queue = run gpu.getQueue(&device)
+  let format = flags.WGPUTextureFormat_BGRA8Unorm
+  let mut renderer = run UiRenderer.make(&device, format)
+  run measure(&device, &queue, &mut renderer, format, WIDTH, HEIGHT, false)
+  run measure(&device, &queue, &mut renderer, format, LAYER_WIDTH, LAYER_HEIGHT, true)
   return 0
 }
 

@@ -37,7 +37,7 @@ Every batch of the scene is one instanced draw of six vertices per instance, as 
 | Glyph | `shaders/mono.wgsl` | A8 atlas tile, bilinear at pixel centers clamped to the tile, with DirectWrite's contrast and gamma correction for text (see below). |
 | Image | `shaders/poly.wgsl` | Premultiplied RGBA tile, bilinear, with corner radii, opacity and grayscale. |
 | Path | `shaders/path.wgsl` | `vector` coverage strips in gpu_scene's run layout (4-row bands, a word of coverage per column), placed at the sprite's integer origin; bands start at the sprite's own `y`. |
-| Layer | `shaders/layer.wgsl` | Isolated layers drawn into pooled RGBA8 textures and composited with gpu_scene's `blend.wgsl` (all `vector.layer` blend modes) and the group opacity, with optional layer/backdrop blur and color filters. |
+| Layer | `shaders/layer.wgsl` | Plain isolated layers (opacity, a transform, a mask layer) are drawn into shared textures and blitted inside their parent's pass. Every other layer is drawn into a pooled RGBA8 texture and composited with gpu_scene's `blend.wgsl` (all `vector.layer` blend modes) and the group opacity, with optional layer/backdrop blur and color filters. See [Isolated layers](#isolated-layers). |
 
 Two-stop linear gradients take any `silk.color` interpolation. sRGB gradients are mixed in the
 shader; every other interpolation (linear sRGB, Oklab, Oklch and the other polar spaces with their
@@ -52,12 +52,34 @@ Content masks clip by pixel area. `shaders/common.wgsl` holds what the pipelines
 
 All instances of a frame go into one storage buffer per kind (every layer's sorted list, in layer
 order), uploaded with `queue.writeBuffer`. The buffers persist across frames and are replaced
-only when a frame outgrows them. A scene without isolated layers draws straight onto the target;
-with them, the frame is drawn into an RGBA8 texture and copied to the target at the end.
+only when a frame outgrows them. A scene without isolated layers draws straight onto the target.
 
 Paths do not go through `gpu_scene.SceneRenderer` itself: UI paths need content masks and gradient
 ramps, which its paint records lack. They reuse its band layout, its buffer helpers and its
 blend modes.
+
+### Isolated layers
+
+A layer that needs only its pixels, an opacity, a transform and a mask layer is **plain**. It
+costs no pass of its own:
+
+- Plain layers of one nesting depth that do not overlap share a target-sized texture, a
+  **page**. A page is one pass, drawn before the layers that hold its layers, deepest first.
+  Each layer draws within its own pixels of the page (a scissor).
+- The parent's pass then blits each layer where it comes in the parent's batches, blended
+  source-over by the pipeline. A mask layer is one more layer on another page; the blit keeps
+  the layer inside its alpha.
+- Layers that overlap take a page each, up to 12 pages a frame.
+
+So a page of 50 animated tiles is two passes: one page, then the frame. `layers-frame` in the
+benchmark is that frame, 128 ms before pages and 37 ms with them on lavapipe.
+
+Every other layer (a blend mode, blur, a color filter, a drop shadow, backdrop blur, or one past
+the page limit) is composited the slow way: its content into a pooled texture, then a blend pass
+that reads a copy of what is under it. That pass interrupts the parent's pass, and each of these
+passes loads and stores a target-sized texture, so keep such layers few. When the root holds
+one, the frame is drawn into an RGBA8 texture and copied to the target at the end. A plain layer
+that holds a backdrop blur takes a page alone, so the blur reads only that layer.
 
 ### Layer effects and atlas uploads
 
@@ -99,6 +121,7 @@ too. Flat areas match exactly.
 | layers | 25 | 0.20% | 0.06 |
 | nested | 24 | 0.10% | 0.04 |
 | gradients | 28 | 0.37% | 0.13 |
+| pages | 23 | 0.23% | 0.08 |
 | text ramp | 0 | 0 | 0 |
 
 These are lavapipe's numbers. Chromium's WebGPU (SwiftShader) gives the same within a level.
@@ -112,7 +135,7 @@ The test allows 48, 0.6% and 0.5 (exact for the text ramp).
 | `modules/ui_renderer/fixtures` | `graphics-ui-renderer-fixtures` | Fixture scenes and their CPU references |
 | `modules/ui_renderer/tests` | `graphics-ui-renderer-tests` | Native GPU against CPU comparison |
 | `modules/ui_renderer/browser` | `graphics-ui-renderer-browser` | The same comparison as a wasm module for Chromium |
-| `modules/ui_renderer/bench` | `graphics-ui-renderer-bench` | Dense-scene frame time |
+| `modules/ui_renderer/bench` | `graphics-ui-renderer-bench` | Frame time of a dense scene and of a page of 50 layers |
 
 ## Tests
 
