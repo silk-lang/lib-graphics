@@ -34,7 +34,6 @@ import vector.strips { Coverage, NONZERO, Rasterizer }
 import vector.stroke { CAP_BUTT, JOIN_ROUND, Stroke, Stroker }
 import color
 import silk.color.rgba { Rgba }
-import silk.color.color { Interpolation }
 import primitives {
   Background,
   BorderStyle,
@@ -45,6 +44,7 @@ import primitives {
   LinearGradient,
   PathSprite,
   ColorStop,
+  GradientShape,
   Quad,
   Shadow,
   Underline,
@@ -288,14 +288,16 @@ const LINEAR: u32 = 0
 const RADIAL: u32 = 1
 const CONIC: u32 = 2
 
-/// Where a pixel's color comes from: one premultiplied color, or a CSS gradient ramp. For a
-/// linear gradient `dx`, `dy` is the line's direction; for a radial one the reciprocal radii; for
-/// a conic one `dx` is the start angle in turns.
+/// Where a pixel's color comes from: one premultiplied color, a two-stop linear gradient's ramp,
+/// or the stops of a [`StopsGradient`]. For a linear shape `dx`, `dy` is the line's direction;
+/// for a radial one the reciprocal radii; for a conic one `dx` is the start angle in turns.
 struct Painter {
   solid: bool,
   shape: u32,
   color: u32,
   ramp: List<u32>,
+  stops: List<ColorStop>,
+  repeating: bool,
   cx: f32,
   cy: f32,
   dx: f32,
@@ -305,6 +307,21 @@ struct Painter {
   to: f32,
 }
 
+/// The premultiplied mix of straight colors `a` and `b` at `t`, as the GPU renderer mixes
+/// sRGB gradients.
+fn mixPremultiplied(a: Rgba<f32>, b: Rgba<f32>, t: f32) -> u32 {
+  let aa = clampF(a.a, 0.0, 1.0)
+  let ba = clampF(b.a, 0.0, 1.0)
+  let alpha = aa + (ba - aa) * t
+  if !(alpha > 0.0) {
+    return 0
+  }
+  let r = (a.r * aa + (b.r * ba - a.r * aa) * t) / alpha
+  let g = (a.g * aa + (b.g * ba - a.g * aa) * t) / alpha
+  let bl = (a.b * aa + (b.b * ba - a.b * aa) * t) / alpha
+  return pack(color.toPremultipliedRgba8(Rgba<f32> { r: r, g: g, b: bl, a: alpha }))
+}
+
 impl Painter {
   fn make() -> Painter {
     return Painter {
@@ -312,6 +329,8 @@ impl Painter {
       shape: LINEAR,
       color: 0,
       ramp: List<u32>.make(),
+      stops: List<ColorStop>.make(),
+      repeating: false,
       cx: 0.0,
       cy: 0.0,
       dx: 0.0,
@@ -327,57 +346,66 @@ impl Painter {
     self.color = pack(color.toPremultipliedRgba8(fill))
   }
 
-  /// Paints `background` over `box`, the gradient's box.
-  effect fn set(self: &mut Self, background: Background, box: Rect<f32>) -> ()
+  /// Paints `background` over `box`, the gradient's box. `scene` holds gradient stops.
+  effect fn set(self: &mut Self, scene: &Scene, background: Background, box: Rect<f32>) -> ()
     ! OutOfMemoryError
     ? &mut Allocator {
     match background {
       Background.Solid { color: fill } => self.setColor(fill)
       Background.Linear { gradient } => run self.setGradient(gradient, box)
-      Background.Radial { gradient: g } => {
-        run self.setRamp(g.from, g.to, g.interpolation)
-        self.shape = RADIAL
-        self.cx = g.centerX
-        self.cy = g.centerY
-        self.dx = 1.0 / f32.max(g.radiusX, 0.000001)
-        self.dy = 1.0 / f32.max(g.radiusY, 0.000001)
-      }
-      Background.Conic { gradient: g } => {
-        run self.setRamp(g.from, g.to, g.interpolation)
-        self.shape = CONIC
-        self.cx = g.centerX
-        self.cy = g.centerY
-        self.dx = g.angle / 360.0
-        self.dy = 0.0
+      Background.Stops { gradient: g } => {
+        self.solid = false
+        self.ramp.clear()
+        self.stops.clear()
+        run self.stops.appendSlice(scene.stopsOf(g.stops))
+        self.repeating = g.repeating
+        match g.shape {
+          GradientShape.Linear => self.setLine(g.angle, box)
+          GradientShape.Radial => {
+            self.shape = RADIAL
+            self.cx = box.xMin + g.centerX
+            self.cy = box.yMin + g.centerY
+            self.dx = 1.0 / f32.max(g.radiusX, 0.000001)
+            self.dy = 1.0 / f32.max(g.radiusY, 0.000001)
+          }
+          GradientShape.Conic => {
+            self.shape = CONIC
+            self.cx = box.xMin + g.centerX
+            self.cy = box.yMin + g.centerY
+            self.dx = g.angle / 360.0
+            self.dy = 0.0
+          }
+        }
+        if self.stops.length() == 0 {
+          self.setColor(color.transparent())
+        }
       }
     }
-  }
-
-  effect fn setRamp(self: &mut Self, from: ColorStop, to: ColorStop, interpolation: Interpolation) -> ()
-    ! OutOfMemoryError
-    ? &mut Allocator {
-    self.solid = false
-    self.ramp.clear()
-    let mut i: u32 = 0
-    while i < 256 {
-      let t = u32.toF32(i) / 255.0
-      let c = color.mix(from.color, to.color, t, interpolation)
-      run self.ramp.append(pack(color.toPremultipliedRgba8(c)))
-      i = i + 1
-    }
-    self.from = from.offset
-    self.to = to.offset
   }
 
   effect fn setGradient(self: &mut Self, g: LinearGradient, box: Rect<f32>) -> ()
     ! OutOfMemoryError
     ? &mut Allocator {
-    run self.setRamp(g.from, g.to, g.interpolation)
-    self.shape = LINEAR
+    self.solid = false
+    self.stops.clear()
+    self.ramp.clear()
+    let mut i: u32 = 0
+    while i < 256 {
+      let t = u32.toF32(i) / 255.0
+      let c = color.mix(g.from.color, g.to.color, t, g.interpolation)
+      run self.ramp.append(pack(color.toPremultipliedRgba8(c)))
+      i = i + 1
+    }
+    self.from = g.from.offset
+    self.to = g.to.offset
+    self.setLine(g.angle, box)
+  }
 
-    // CSS: the gradient line runs through the center at `angle` clockwise from up, long enough
-    // that the corners reach 0 and 1.
-    let radians = f32.toF64(g.angle) * PI / 180.0
+  /// CSS: the gradient line runs through the center at `angle` clockwise from up, long enough
+  /// that the corners reach 0 and 1.
+  fn setLine(self: &mut Self, angle: f32, box: Rect<f32>) -> () {
+    self.shape = LINEAR
+    let radians = f32.toF64(angle) * PI / 180.0
     let dx = f64.toF32(f64.sin(radians))
     let dy = f64.toF32(-f64.cos(radians))
     let w = box.xMax - box.xMin
@@ -406,6 +434,10 @@ impl Painter {
     } else {
       (px * self.dx + py * self.dy) / self.half * 0.5 + 0.5
     }
+    let n = self.stops.length()
+    if n > 0 {
+      return self.stopAt(along, n)
+    }
     let span = self.to - self.from
     let t: f32 = if span > 0.0 {
       (along - self.from) / span
@@ -415,6 +447,30 @@ impl Painter {
       1.0
     }
     return self.ramp.get(u32.toUsize(toByte(t * 255.0)))
+  }
+
+  /// The color of the stops at offset `along`, mixed in 1/255 steps between neighbours, as the
+  /// GPU renderer's `shade`.
+  fn stopAt(self: &Self, along: f32, n: usize) -> u32 {
+    let stops = self.stops.asSlice()
+    let first = stops[0].offset
+    let period = stops[n - 1].offset - first
+    let mut a = along
+    if self.repeating && period > 0.000001 {
+      let k = (a - first) / period
+      a = first + (k - f32.floor(k)) * period
+    }
+    let mut i: usize = 0
+    while i + 1 < n && stops[i + 1].offset <= a {
+      i = i + 1
+    }
+    if i + 1 >= n || a < first {
+      return mixPremultiplied(stops[i].color, stops[i].color, 0.0)
+    }
+    let lo = stops[i].offset
+    let t = (a - lo) / (stops[i + 1].offset - lo)
+    let step = f32.floor(clampF(t, 0.0, 1.0) * 255.0 + 0.5) / 255.0
+    return mixPremultiplied(stops[i].color, stops[i + 1].color, step)
   }
 }
 
@@ -610,7 +666,7 @@ impl CpuRenderer {
             placed.shadow(scene.shadows(layer)[i], g),
             &mut target,
           )
-          PrimitiveKind.Quad => run self.quad(placed.quad(scene.quads(layer)[i], g), &mut target)
+          PrimitiveKind.Quad => run self.quad(scene, placed.quad(scene.quads(layer)[i], g), &mut target)
           PrimitiveKind.Path => run self.pathSprite(
             scene,
             placed.path(scene.paths(layer)[i], g),
@@ -804,7 +860,7 @@ impl CpuRenderer {
     }
   }
 
-  effect fn quad(self: &mut Self, quad: Quad, target: &mut Pixmap) -> ()
+  effect fn quad(self: &mut Self, scene: &Scene, quad: Quad, target: &mut Pixmap) -> ()
     ! GeometryError | OutOfMemoryError
     ? &mut Allocator {
     let area = areaOf(quad.bounds, quad.mask.bounds, target.width(), target.height())
@@ -817,7 +873,7 @@ impl CpuRenderer {
     if !quad.background.isTransparent() {
       let mut mask = List<u8>.make()
       run self.rasterize(area, NONZERO, &mut mask)
-      run self.painter.set(quad.background, quad.bounds)
+      run self.painter.set(scene, quad.background, quad.bounds)
       self.composite(area, mask.asSlice(), quad.mask.bounds, &mut target)
     }
     if !quad.hasBorder() {
@@ -1187,7 +1243,7 @@ impl CpuRenderer {
       }
       f = f + 1
     }
-    run self.painter.set(sprite.paint, sprite.paintBounds)
+    run self.painter.set(scene, sprite.paint, sprite.paintBounds)
     self.composite(area, mask.asSlice(), sprite.mask.bounds, &mut target)
   }
 }

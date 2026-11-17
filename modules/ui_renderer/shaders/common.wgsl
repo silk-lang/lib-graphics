@@ -82,12 +82,15 @@ fn coverage(distance: f32) -> f32 {
   return clamp(0.5 - distance, 0.0, 1.0);
 }
 
-// A background: a solid color or a two-stop CSS gradient. `kind.x` is 0 for solid, 1 for a
-// gradient mixed here in sRGB, 2 for a gradient read from ramp `kind.y` of `ramps` (any other
-// interpolation, sampled on the CPU with silk.color); `kind.w` is its shape: 0 linear, 1 radial,
-// 2 conic. `first` and `last` hold the stops, straight sRGB (`first` is the solid color). `line`
-// is the center and then the direction (linear), the reciprocal radii (radial) or the start angle
-// in turns (conic); `stops` holds the linear half length and the two stop offsets.
+// A background: a solid color or a CSS gradient. `kind.x` is 0 for solid, 1 for a two-stop linear
+// gradient mixed here in sRGB, 2 for one read from ramp `kind.y` of `ramps` (any other
+// interpolation, sampled on the CPU with silk.color), 3 for a gradient with any number of stops
+// mixed here in sRGB: `first.x` of them at word `kind.y` of `ramps`, five words each (the offset,
+// then the straight color), repeating when `first.y` is 1. `kind.w` is the shape: 0 linear,
+// 1 radial, 2 conic. For two stops `first` and `last` hold them, straight sRGB (`first` is the
+// solid color). `line` is the center and then the direction (linear), the reciprocal radii
+// (radial) or the start angle in turns (conic); `stops` holds the linear half length and the two
+// stop offsets.
 struct Paint {
   kind: vec4u,
   first: vec4f,
@@ -113,16 +116,54 @@ fn shade(paint: Paint, p: vec2f) -> vec4f {
     let a = atan2(d.x, -d.y) / 6.2831855 - paint.line.z;
     along = a - floor(a);
   }
+  if paint.kind.x == 3u { return shadeStops(paint, along); }
   let span = paint.stops.z - paint.stops.y;
   var t = select(0.0, 1.0, along >= paint.stops.y);
   if span > 0.0 { t = (along - paint.stops.y) / span; }
   let step = floor(clamp(t, 0.0, 1.0) * 255.0 + 0.5);
   if paint.kind.x == 2u { return unpack4x8unorm(ramps[paint.kind.y * 256u + u32(step)]); }
-  t = step / 255.0;
-  let a = clamp(paint.first.a, 0.0, 1.0);
-  let b = clamp(paint.last.a, 0.0, 1.0);
-  let alpha = a + (b - a) * t;
+  return mixPremultiplied(paint.first, paint.last, step / 255.0);
+}
+
+// Straight colors `a` and `b` mixed premultiplied at `t`.
+fn mixPremultiplied(a: vec4f, b: vec4f, t: f32) -> vec4f {
+  let aa = clamp(a.a, 0.0, 1.0);
+  let ba = clamp(b.a, 0.0, 1.0);
+  let alpha = aa + (ba - aa) * t;
   if !(alpha > 0.0) { return vec4f(0.0); }
-  var c = (paint.first.rgb * a + (paint.last.rgb * b - paint.first.rgb * a) * t) / alpha;
+  let c = (a.rgb * aa + (b.rgb * ba - a.rgb * aa) * t) / alpha;
   return premultiply(vec4f(c, alpha));
+}
+
+fn stopOffset(base: u32, i: u32) -> f32 {
+  return bitcast<f32>(ramps[base + i * 5u]);
+}
+
+fn stopColor(base: u32, i: u32) -> vec4f {
+  let w = base + i * 5u;
+  return vec4f(bitcast<f32>(ramps[w + 1u]), bitcast<f32>(ramps[w + 2u]), bitcast<f32>(ramps[w + 3u]), bitcast<f32>(ramps[w + 4u]));
+}
+
+// The stops of `paint` at offset `along`, mixed in 1/255 steps between neighbours.
+fn shadeStops(paint: Paint, along: f32) -> vec4f {
+  let base = paint.kind.y;
+  let n = u32(paint.first.x);
+  if n == 0u { return vec4f(0.0); }
+  let first = stopOffset(base, 0u);
+  let period = stopOffset(base, n - 1u) - first;
+  var a = along;
+  if paint.first.y > 0.5 && period > 0.000001 {
+    let k = (a - first) / period;
+    a = first + (k - floor(k)) * period;
+  }
+  var i = 0u;
+  loop {
+    if i + 1u >= n || stopOffset(base, i + 1u) > a { break; }
+    i = i + 1u;
+  }
+  if i + 1u >= n || a < first { return mixPremultiplied(stopColor(base, i), stopColor(base, i), 0.0); }
+  let lo = stopOffset(base, i);
+  let t = (a - lo) / (stopOffset(base, i + 1u) - lo);
+  let step = floor(clamp(t, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
+  return mixPremultiplied(stopColor(base, i), stopColor(base, i + 1u), step);
 }

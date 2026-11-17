@@ -75,8 +75,8 @@ pub effect fn fixture(index: u32) -> Fixture
     name = "masks"
     run fixtures.masks(&mut scene)
   } else if index == 10 {
-    name = "radial conic"
-    run fixtures.radialConic(&mut scene)
+    name = "many stops"
+    run fixtures.manyStops(&mut scene)
   } else {
     name = "text ramp"
     run fixtures.textRamp(&mut scene, &mut tiles)

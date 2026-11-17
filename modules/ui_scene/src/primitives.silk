@@ -73,41 +73,49 @@ pub struct LinearGradient {
 
 impl Copy for LinearGradient {}
 
-/// A two-stop radial gradient, as CSS `radial-gradient(ellipse rx ry at cx cy, from, to)`: offset 0
-/// at the center, 1 on the ellipse with radii `radiusX` and `radiusY`. The center and radii are in
-/// device pixels, like the primitive's bounds. Outside the stops the end colors extend (pad).
-pub struct RadialGradient {
+/// The shape of a [`StopsGradient`].
+pub enum GradientShape {
+  /// Along a line through the box center at `angle`, as [`LinearGradient`].
+  Linear,
+  /// Out from the center to the ellipse with radii `radiusX`, `radiusY`: offset 0 at the center,
+  /// 1 on the ellipse, as CSS `radial-gradient`.
+  Radial,
+  /// Around the center, from the ray at `angle` degrees clockwise from up (offset 0) clockwise to
+  /// a full turn later (offset 1), as CSS `conic-gradient`.
+  Conic,
+}
+
+/// A run of stops kept by the scene ([`scene.Scene.colorStops`]).
+pub struct StopRange {
+  pub start: u32,
+  pub count: u32,
+}
+
+impl Copy for StopRange {}
+
+/// A CSS gradient with any number of stops, interpolated in sRGB. Offsets never decrease; two
+/// stops at one offset make a hard edge. Outside the stops the end colors extend (pad), or with
+/// `repeating` the run from the first stop to the last repeats.
+pub struct StopsGradient {
+  pub shape: GradientShape,
+  /// Degrees clockwise from up: the line's direction (linear) or the start ray (conic).
+  pub angle: f32,
+  /// The center (radial, conic), from the top left corner of the box the gradient spans.
   pub centerX: f32,
   pub centerY: f32,
   pub radiusX: f32,
   pub radiusY: f32,
-  pub from: ColorStop,
-  pub to: ColorStop,
-  pub interpolation: Interpolation,
+  pub repeating: bool,
+  pub stops: StopRange,
 }
 
-impl Copy for RadialGradient {}
-
-/// A two-stop conic gradient, as CSS `conic-gradient(from <angle> at cx cy, from, to)`: offset 0
-/// on the ray at `angle` degrees clockwise from up, rising clockwise to 1 a full turn later. The
-/// center is in device pixels. Outside the stops the end colors extend (pad).
-pub struct ConicGradient {
-  pub centerX: f32,
-  pub centerY: f32,
-  pub angle: f32,
-  pub from: ColorStop,
-  pub to: ColorStop,
-  pub interpolation: Interpolation,
-}
-
-impl Copy for ConicGradient {}
+impl Copy for StopsGradient {}
 
 /// What fills a quad or a path.
 pub union Background {
   Solid { pub color: Rgba<f32> },
   Linear { pub gradient: LinearGradient },
-  Radial { pub gradient: RadialGradient },
-  Conic { pub gradient: ConicGradient },
+  Stops { pub gradient: StopsGradient },
 }
 
 impl Copy for Background {}
@@ -136,10 +144,7 @@ impl Background {
       Background.Solid { color: c } => color.isTransparent(c)
       Background.Linear { gradient } => color.isTransparent(gradient.from.color)
         && color.isTransparent(gradient.to.color)
-      Background.Radial { gradient } => color.isTransparent(gradient.from.color)
-        && color.isTransparent(gradient.to.color)
-      Background.Conic { gradient } => color.isTransparent(gradient.from.color)
-        && color.isTransparent(gradient.to.color)
+      Background.Stops { .. } => false
     }
   }
 }

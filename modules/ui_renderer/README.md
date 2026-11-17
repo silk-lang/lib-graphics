@@ -39,11 +39,14 @@ Every batch of the scene is one instanced draw of six vertices per instance, as 
 | Path | `shaders/path.wgsl` | `vector` coverage strips in gpu_scene's run layout (4-row bands, a word of coverage per column), placed at the sprite's integer origin; bands start at the sprite's own `y`. |
 | Layer | `shaders/layer.wgsl` | Isolated layers drawn into pooled RGBA8 textures and composited with gpu_scene's `blend.wgsl` (all `vector.layer` blend modes) and the group opacity, with optional layer/backdrop blur and color filters. |
 
-Gradients (linear, radial and conic) have two stops and any `silk.color` interpolation. sRGB gradients are mixed in the
+Two-stop linear gradients take any `silk.color` interpolation. sRGB gradients are mixed in the
 shader; every other interpolation (linear sRGB, Oklab, Oklch and the other polar spaces with their
 hue arcs, wide gamut spaces) gets a 256-entry ramp of premultiplied RGBA8 words, sampled on the
 CPU with the same `color.mix` the CPU reference uses, in a storage buffer the quad and path
-shaders read. Either way the parameter steps in 1/255, as the CPU reference's ramp does.
+shaders read. Either way the parameter steps in 1/255, as the CPU reference's ramp does. `Stops` gradients
+(linear, radial, conic, any number of stops, repeating or not) mix in sRGB in the shader: their
+stops go into the same storage buffer, five words each, and the parameter steps in 1/255 between
+neighbouring stops.
 Content masks clip by pixel area. `shaders/common.wgsl` holds what the pipelines share; edit the
 `.wgsl` files and run `silk task embed-shaders`, never the generated module.
 
