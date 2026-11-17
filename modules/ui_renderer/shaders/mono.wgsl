@@ -32,7 +32,7 @@ fn correctText(alpha: f32, color: vec3f) -> f32 {
 
 @fragment fn fs(v: Varying) -> @location(0) vec4f {
   let s = sprites[v.index];
-  let p = v.position.xy;
+  let p = v.position.xy + globals.origin.xy;
   let clipped = vec4f(max(s.mask.xy, s.bounds.xy), min(s.mask.zw, s.bounds.zw));
   let clip = areaIn(clipped, p) * cornerCoverage(s.mask, s.maskRadii, p);
   if clip <= 0.0 { discard; }

@@ -30,7 +30,7 @@ fn cameraSprite(source: PolySprite) -> PolySprite {
 
 @fragment fn fs(v: Varying) -> @location(0) vec4f {
   let s = cameraSprite(sprites[v.index]);
-  let p = v.position.xy;
+  let p = v.position.xy + globals.origin.xy;
   let radii = clamp(s.radii, vec4f(0.0), vec4f(max(min(s.clipBounds.z - s.clipBounds.x, s.clipBounds.w - s.clipBounds.y) * 0.5, 0.0)));
   let weight = coverage(roundedRectSdf(p, s.clipBounds, radii)) * clamp(s.params.x, 0.0, 1.0) * areaIn(s.mask, p) * cornerCoverage(s.mask, s.maskRadii, p);
   if weight <= 0.0 { discard; }
