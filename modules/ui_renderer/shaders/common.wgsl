@@ -10,6 +10,9 @@ struct Globals {
   gamma: vec4f,
   // Image-only retained scenes: uniform scale, reserved, translation x/y.
   imageCamera: vec4f,
+  // Where the target's pixel (0, 0) lies in scene pixels: an offscreen page holds only the part
+  // of the scene its layers cover. `size` is the target's own size. zw unused.
+  origin: vec4f,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 
@@ -21,15 +24,17 @@ const CORNERS = array<vec2f, 6>(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0
 // Clip space for corner `index` of the pixel rectangle `r` (xMin, yMin, xMax, yMax).
 fn corner(r: vec4f, index: u32) -> vec4f {
   let c = CORNERS[index];
-  let p = mix(r.xy, r.zw, c);
+  let p = mix(r.xy, r.zw, c) - globals.origin.xy;
   return vec4f(p.x / globals.size.x * 2.0 - 1.0, 1.0 - p.y / globals.size.y * 2.0, 0.0, 1.0);
 }
 
 // The pixels a primitive drawing `bounds` under `mask` touches: their intersection rounded out to
-// whole pixels and clamped to the target. Empty rectangles collapse to a point.
+// whole pixels and clamped to the target, in scene pixels. Empty rectangles collapse to a point.
 fn cover(bounds: vec4f, mask: vec4f) -> vec4f {
-  let lo = clamp(floor(max(bounds.xy, mask.xy)), vec2f(0.0), globals.size);
-  let hi = clamp(ceil(min(bounds.zw, mask.zw)), vec2f(0.0), globals.size);
+  let low = globals.origin.xy;
+  let high = low + globals.size;
+  let lo = clamp(floor(max(bounds.xy, mask.xy)), low, high);
+  let hi = clamp(ceil(min(bounds.zw, mask.zw)), low, high);
   return vec4f(lo, max(hi, lo));
 }
 

@@ -52,7 +52,7 @@ fn blurAlongX(x: f32, y: f32, sigma: f32, radius: f32, half: vec2f) -> f32 {
 
 @fragment fn fs(v: Varying) -> @location(0) vec4f {
   let s = shadows[v.index];
-  let p = v.position.xy;
+  let p = v.position.xy + globals.origin.xy;
   let clip = areaIn(s.mask, p) * cornerCoverage(s.mask, s.maskRadii, p);
   if clip <= 0.0 { discard; }
   let sigma = s.params.x;

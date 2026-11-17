@@ -65,9 +65,13 @@ blend modes.
 A layer that needs only its pixels, an opacity, a transform and a mask layer is **plain**. It
 costs no pass of its own:
 
-- Plain layers of one nesting depth that do not overlap share a target-sized texture, a
-  **page**. A page is one pass, drawn before the layers that hold its layers, deepest first.
-  Each layer draws within its own pixels of the page (a scissor).
+- Plain layers of one nesting depth that do not overlap share a texture, a **page**. A page is
+  one pass, drawn before the layers that hold its layers, deepest first. Each layer draws within
+  its own pixels of the page (a scissor).
+- A page's texture spans only the bounds of its layers (rounded up to 128 pixels), and a layer
+  far from a page's others starts a page of its own, so pages cost memory for what they hold,
+  not for the window. A page that holds a layer composited the slow way, or a backdrop blur, is
+  target-sized.
 - The parent's pass then blits each layer where it comes in the parent's batches, blended
   source-over by the pipeline. A mask layer is one more layer on another page; the blit keeps
   the layer inside its alpha.

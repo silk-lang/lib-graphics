@@ -22,7 +22,7 @@ const TAU: f32 = 6.283185307179586;
 
 @fragment fn fs(v: Varying) -> @location(0) vec4f {
   let u = underlines[v.index];
-  let p = v.position.xy;
+  let p = v.position.xy + globals.origin.xy;
   let b = u.bounds;
   let thickness = u.params.x;
   var alpha = 0.0;
