@@ -17,6 +17,7 @@
 import silk.collections.list { List }
 import silk.core.ownership { Copy }
 import silk.geometry.matrix { Matrix3 }
+import silk.geometry.corners { Corners }
 import silk.geometry.rect { Rect }
 import silk.geometry.vector { Vector2 }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
@@ -129,6 +130,8 @@ pub struct ScrollGroup {
   pub link: ScrollLink,
   /// What the group's primitives are cut to, in its parent's space.
   pub clip: Rect<f32>,
+  /// The corner radii of `clip`, zero for a plain rectangle.
+  pub clipRadii: Corners<f32>,
   /// Where the group's primitives can draw at any scroll, in its parent's space: what the group
   /// is ordered by against everything around it.
   pub bounds: Rect<f32>,
@@ -141,6 +144,8 @@ pub struct Placement {
   pub dx: f32,
   pub dy: f32,
   pub clip: Rect<f32>,
+  /// `clip` with the rounded corners of the groups that cut it.
+  pub mask: ContentMask,
 }
 
 impl Copy for Placement {}
@@ -163,7 +168,7 @@ fn cut(a: Rect<f32>, b: Rect<f32>) -> Rect<f32> {
 }
 
 fn movedMask(mask: ContentMask, p: Placement) -> ContentMask {
-  return ContentMask.new(cut(moved(mask.bounds, p.dx, p.dy), p.clip))
+  return mask.moved(p.dx, p.dy).intersect(p.mask)
 }
 
 /// The offset and clip of every group of a scene at some scroll positions.
@@ -187,7 +192,7 @@ impl Placements {
     ! OutOfMemoryError
     ? &mut Allocator {
     self.list.clear()
-    run self.list.append(Placement { dx: 0.0, dy: 0.0, clip: unbounded() })
+    run self.list.append(Placement { dx: 0.0, dy: 0.0, clip: unbounded(), mask: ContentMask.new(unbounded()) })
     let mut g: usize = 1
     while g < groups.length {
       let group = groups[g]
@@ -195,8 +200,8 @@ impl Placements {
       let scroll = positionOf(painted, newer, group.link.node)
       let dx = parent.dx + group.link.x.at(scroll.x)
       let dy = parent.dy + group.link.y.at(scroll.y)
-      let clip = cut(parent.clip, moved(group.clip, parent.dx, parent.dy))
-      run self.list.append(Placement { dx: dx, dy: dy, clip: clip })
+      let mask = parent.mask.intersect(ContentMask.rounded(group.clip, group.clipRadii).moved(parent.dx, parent.dy))
+      run self.list.append(Placement { dx: dx, dy: dy, clip: mask.bounds, mask: mask })
       g = g + 1
     }
   }
@@ -209,7 +214,7 @@ impl Placements {
   /// The placement of group `group`.
   pub fn get(self: &Self, group: u32) -> Placement {
     if u32.toUsize(group) >= self.list.length() {
-      return Placement { dx: 0.0, dy: 0.0, clip: unbounded() }
+      return Placement { dx: 0.0, dy: 0.0, clip: unbounded(), mask: ContentMask.new(unbounded()) }
     }
     return self.list.get(u32.toUsize(group))
   }
@@ -293,6 +298,7 @@ impl Placements {
     let mut out = s
     out.bounds = cut(moved(s.bounds, p.dx, p.dy), p.clip)
     out.effects.clip = moved(s.effects.clip, p.dx, p.dy)
+    out.clip = movedMask(s.clip, p)
     if s.transformed() {
       // The layer's own primitives are outside every group (see `Scene.pushTransformLayer`):
       // only where they land moves.

@@ -34,6 +34,7 @@ import silk.core.equal { Equal }
 import silk.core.order { Order, Ordering }
 import silk.core.ownership { Copy }
 import silk.geometry.matrix { Matrix3 }
+import silk.geometry.corners { Corners }
 import silk.geometry.rect { Rect }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
 import silk.num.f32
@@ -634,6 +635,7 @@ fn rootGroup() -> ScrollGroup {
     parent: ROOT_GROUP,
     link: ScrollLink { node: 4294967295, x: ScrollAxis.fixed(), y: ScrollAxis.fixed() },
     clip: everything,
+    clipRadii: Corners<f32>.zero(),
     bounds: everything,
   }
 }
@@ -1104,6 +1106,7 @@ impl Scene {
           } else {
             pixelBounds(bounds)
           },
+          clip: mask,
         },
         order,
         0,
@@ -1159,11 +1162,25 @@ impl Scene {
   ) -> u32
     ! OutOfMemoryError
     ? &mut Allocator {
+    return run self.pushRoundedScrollGroup(link, ContentMask.new(clip), bounds)
+  }
+
+  /// [`pushScrollGroup`] whose clip has rounded corners, as a scrolling box with
+  /// `border-radius` clips its content.
+  pub effect fn pushRoundedScrollGroup(
+    self: &mut Self,
+    link: ScrollLink,
+    mask: ContentMask,
+    bounds: Rect<f32>,
+  ) -> u32
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    let clip = mask.bounds
     run self.ensureRoot()
     let context = self.context()
     let index = usize.toU32(self.groups.length())
     run self.groups.append(
-      ScrollGroup { parent: context.group, link: link, clip: clip, bounds: bounds },
+      ScrollGroup { parent: context.group, link: link, clip: clip, clipRadii: mask.radii, bounds: bounds },
     )
     run self.log(OP_PUSH_GROUP, index)
     let mut tree = NO_TREE
@@ -1328,7 +1345,7 @@ impl Scene {
         run self.popLayer()
       } else if op.kind == OP_PUSH_GROUP {
         let group = previous.groups.get(at)
-        drop run self.pushScrollGroup(group.link, group.clip, group.bounds)
+        drop run self.pushRoundedScrollGroup(group.link, ContentMask.rounded(group.clip, group.clipRadii), group.bounds)
       } else if op.kind == OP_POP_GROUP {
         run self.popScrollGroup()
       } else if op.kind == OP_SCROLL {

@@ -62,6 +62,19 @@ fn roundedRectSdf(p: vec2f, r: vec4f, radii: vec4f) -> f32 {
   return min(max(d.x, d.y), 0.0) + length(max(d, vec2f(0.0))) - radius;
 }
 
+// How much of the pixel centered at `p` the rounded corners `radii` of content mask `r` keep: 1
+// away from the corners, so the rectangle stays `areaIn`'s. Matches ContentMask.cornerCoverage.
+fn cornerCoverage(r: vec4f, radii: vec4f, p: vec2f) -> f32 {
+  if max(max(radii.x, radii.y), max(radii.z, radii.w)) <= 0.0 { return 1.0; }
+  let half = (r.zw - r.xy) * 0.5;
+  let q = p - (r.xy + half);
+  let radius = clamp(pickRadius(q, radii), 0.0, max(min(half.x, half.y), 0.0));
+  if radius <= 0.0 { return 1.0; }
+  let d = abs(q) - half + radius;
+  if d.x <= 0.0 || d.y <= 0.0 { return 1.0; }
+  return clamp(0.5 - (length(d) - radius), 0.0, 1.0);
+}
+
 // Signed distance from `p` to rectangle `r` whose corner in `p`'s quadrant is the quarter
 // ellipse with radii `e` (an approximation off the ellipse, exact for circles).
 fn ellipticRectSdf(p: vec2f, r: vec4f, e: vec2f) -> f32 {

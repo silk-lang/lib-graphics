@@ -16,6 +16,7 @@ struct Run {
 struct PathRecord {
   mask: vec4f,
   paint: Paint,
+  maskRadii: vec4f,
 }
 @group(0) @binding(1) var<storage, read> runs: array<Run>;
 @group(0) @binding(2) var<storage, read> paths: array<PathRecord>;
@@ -37,7 +38,7 @@ struct Varying { @builtin(position) position: vec4f, @location(0) @interpolate(f
   let r = runs[v.index];
   let path = paths[r.path];
   let p = v.position.xy;
-  let clip = areaIn(path.mask, p);
+  let clip = areaIn(path.mask, p) * cornerCoverage(path.mask, path.maskRadii, p);
   if clip <= 0.0 { discard; }
   var alpha = 1.0;
   if r.alpha != SOLID {

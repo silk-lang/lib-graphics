@@ -256,6 +256,36 @@ fn areaIn(rect: Rect<f32>, x: i32, y: i32) -> f32 {
   return w * h
 }
 
+/// How much of the pixel at `(x, y)` the rounded corners of `mask` keep.
+fn corners(mask: ContentMask, x: i32, y: i32) -> f32 {
+  return mask.cornerCoverage(i32.toF32(x) + 0.5, i32.toF32(y) + 0.5)
+}
+
+/// Scales `area` of `pixels` (premultiplied) by the corner coverage of `mask`.
+fn roundCorners(pixels: &mut Pixmap, mask: ContentMask, area: Area) -> () {
+  let width = pixels.width()
+  let data = pixels.dataMut()
+  let mut y: u32 = 0
+  while y < area.height {
+    let py = area.y0 + u32.toI32(y)
+    let mut x: u32 = 0
+    while x < area.width {
+      let px = area.x0 + u32.toI32(x)
+      let keep = corners(mask, px, py)
+      if keep < 1.0 {
+        let at = (u32.toUsize(i32.toU32(py)) * u32.toUsize(width) + u32.toUsize(i32.toU32(px))) * 4
+        let mut channel: usize = 0
+        while channel < 4 {
+          data[at + channel] = u32.toU8(toByte(u32.toF32(u8.toU32(data[at + channel])) * keep))
+          channel = channel + 1
+        }
+      }
+      x = x + 1
+    }
+    y = y + 1
+  }
+}
+
 /// A rectangle of target pixels, `x0 .. x0 + width` by `y0 .. y0 + height`.
 struct Area {
   x0: i32,
@@ -803,6 +833,9 @@ impl CpuRenderer {
         y = y + 1
       }
     }
+    if sprite.clip.isRounded() {
+      roundCorners(&mut offscreen, sprite.clip, area)
+    }
     layering.compositeWithin(
       &mut target,
       &offscreen,
@@ -833,7 +866,7 @@ impl CpuRenderer {
 
   /// Composites the painter's colors through `mask` (times the content mask's pixel area) onto
   /// `area` of `target`.
-  fn composite(self: &Self, area: Area, mask: &[u8], clip: Rect<f32>, target: &mut Pixmap) -> () {
+  fn composite(self: &Self, area: Area, mask: &[u8], clip: Rect<f32>, rounded: ContentMask, target: &mut Pixmap) -> () {
     let stride = u32.toUsize(target.width()) * 4
     let data = target.dataMut()
     let mut y: u32 = 0
@@ -844,7 +877,7 @@ impl CpuRenderer {
         let m = u8.toU32(mask[u32.toUsize(y * area.width + x)])
         if m > 0 {
           let px = area.x0 + u32.toI32(x)
-          let alpha = toByte(u32.toF32(m) * areaIn(clip, px, py))
+          let alpha = toByte(u32.toF32(m) * areaIn(clip, px, py) * corners(rounded, px, py))
           if alpha > 0 {
             let source = scalePacked(self.painter.at(px, py), alpha)
             overPacked(
@@ -874,7 +907,7 @@ impl CpuRenderer {
       let mut mask = List<u8>.make()
       run self.rasterize(area, NONZERO, &mut mask)
       run self.painter.set(scene, quad.background, quad.bounds)
-      self.composite(area, mask.asSlice(), quad.mask.bounds, &mut target)
+      self.composite(area, mask.asSlice(), quad.mask.bounds, quad.mask, &mut target)
     }
     if !quad.hasBorder() {
       return
@@ -944,7 +977,7 @@ impl CpuRenderer {
       multiply(band.asMutSlice(), dashes.asSlice())
     }
     self.painter.setColor(quad.borderColor)
-    self.composite(area, band.asSlice(), quad.mask.bounds, &mut target)
+    self.composite(area, band.asSlice(), quad.mask.bounds, quad.mask, &mut target)
   }
 
   effect fn shadow(self: &mut Self, shadow: Shadow, target: &mut Pixmap) -> ()
@@ -1009,7 +1042,7 @@ impl CpuRenderer {
       multiply(mask.asMutSlice(), box.asSlice())
     }
     self.painter.setColor(shadow.color)
-    self.composite(visible, mask.asSlice(), shadow.mask.bounds, &mut target)
+    self.composite(visible, mask.asSlice(), shadow.mask.bounds, shadow.mask, &mut target)
   }
 
   effect fn underline(self: &mut Self, line: Underline, target: &mut Pixmap) -> ()
@@ -1052,7 +1085,7 @@ impl CpuRenderer {
     run self.rasterize(area, NONZERO, &mut mask)
     self.painter.setColor(line.color)
     let clip = maskWithin(line.mask.bounds, line.bounds)
-    self.composite(area, mask.asSlice(), clip, &mut target)
+    self.composite(area, mask.asSlice(), clip, line.mask, &mut target)
   }
 
   fn glyph(self: &mut Self, sprite: GlyphSprite, pixels: &AtlasPixels, target: &mut Pixmap) -> () {
@@ -1078,7 +1111,7 @@ impl CpuRenderer {
         let px = area.x0 + u32.toI32(x)
         let u = (i32.toF32(px) + 0.5 - b.xMin) * sx
         let v = (i32.toF32(py) + 0.5 - b.yMin) * sy
-        let coverage = pixels.sample(sprite.tile, u, v, 0) * areaIn(clip, px, py)
+        let coverage = pixels.sample(sprite.tile, u, v, 0) * areaIn(clip, px, py) * corners(sprite.mask, px, py)
         let alpha = toByte(coverage)
         if alpha > 0 {
           overPacked(
@@ -1127,7 +1160,7 @@ impl CpuRenderer {
       while x < area.width {
         let px = area.x0 + u32.toI32(x)
         let m = u8.toU32(shape.get(u32.toUsize(y * area.width + x)))
-        let weight = u32.toF32(m) / 255.0 * opacity * areaIn(sprite.mask.bounds, px, py)
+        let weight = u32.toF32(m) / 255.0 * opacity * areaIn(sprite.mask.bounds, px, py) * corners(sprite.mask, px, py)
         if weight > 0.0 {
           let nx = (i32.toF32(px) + 0.5 - b.xMin) / b.width()
           let ny = (i32.toF32(py) + 0.5 - b.yMin) / b.height()
@@ -1244,7 +1277,7 @@ impl CpuRenderer {
       f = f + 1
     }
     run self.painter.set(scene, sprite.paint, sprite.paintBounds)
-    self.composite(area, mask.asSlice(), sprite.mask.bounds, &mut target)
+    self.composite(area, mask.asSlice(), sprite.mask.bounds, sprite.mask, &mut target)
   }
 }
 

@@ -68,7 +68,7 @@ import gpu_scene.filter { FilterImage, FilterRenderer }
 import vector.filter { BlurPlan, Region }
 import vector.filter as filtering
 import ui_scene.effects { LayerEffects }
-import ui_scene.primitives { LayerSprite }
+import ui_scene.primitives { ContentMask, LayerSprite }
 import ui_scene.scene { PrimitiveKind, Scene, NO_MASK }
 import ui_scene.scroll { Placements, ScrollPosition }
 import atlas_textures { GpuAtlas }
@@ -350,33 +350,47 @@ struct Mapping {
   mapped: bool,
   inverse: [f32; 9],
   source: Rect<f32>,
+  /// The content mask the layer lands in, for its rounded corners.
+  clip: ContentMask,
 }
 
 impl Copy for Mapping {}
 
 impl Mapping {
   fn none() -> Mapping {
-    return Mapping { mapped: false, inverse: [0.0; 9], source: Rect<f32>.new(0.0, 0.0, 0.0, 0.0) }
+    let zero = Rect<f32>.new(0.0, 0.0, 0.0, 0.0)
+    return Mapping { mapped: false, inverse: [0.0; 9], source: zero, clip: ContentMask.new(zero) }
   }
 
   /// `sprite`'s mapping; a transform with no inverse draws nothing, as a flattened box does.
   fn of(sprite: &LayerSprite) -> Mapping {
+    let mut out = Mapping.none()
+    out.clip = sprite.clip
     if !sprite.transformed() {
-      return Mapping.none()
+      return out
     }
-    return match sprite.transform.inverse() {
-      Option.Some { value } => Mapping { mapped: true, inverse: value.values, source: sprite.source }
-      Option.None => Mapping {
-        mapped: true,
-        inverse: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0],
-        source: sprite.source,
-      }
+    out.mapped = true
+    out.source = sprite.source
+    out.inverse = match sprite.transform.inverse() {
+      Option.Some { value } => value.values
+      Option.None => [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]
     }
+    return out
   }
 }
 
 /// Writes `mapping` into the params of a `shaders/layer.wgsl` pass.
 fn writeMapping(header: &mut [u8], mapping: &Mapping) -> () {
+  let c = mapping.clip
+  let words = [
+    c.bounds.xMin, c.bounds.yMin, c.bounds.xMax, c.bounds.yMax,
+    c.radii.topLeft, c.radii.topRight, c.radii.bottomRight, c.radii.bottomLeft,
+  ]
+  let mut k: usize = 0
+  while k < 8 {
+    writeU32(&mut header, 128 + k * 4, f32.toBits(words[k]))
+    k = k + 1
+  }
   if !mapping.mapped {
     return
   }
@@ -1107,7 +1121,7 @@ impl UiRenderer {
       drop self.pages.pop()
     }
     let passes = compositesOf(scene, 0) + 1
-    let zeros: [u8; 128] = [0; 128]
+    let zeros: [u8; 160] = [0; 160]
     while self.params.length() < passes {
       let buffer = run storage(
         device,
@@ -1454,7 +1468,7 @@ impl UiRenderer {
     if opacity == 0 {
       return
     }
-    let mut header: [u8; 128] = [0; 128]
+    let mut header: [u8; 160] = [0; 160]
     writeU32(&mut header, 0, OP_BLIT)
     writeU32(&mut header, 8, opacity)
     writeMapping(&mut header, &Mapping.of(&sprite))
@@ -1922,7 +1936,7 @@ impl UiRenderer {
     area: Area,
   ) -> ()
     ! GpuError {
-    let mut header: [u8; 128] = [0; 128]
+    let mut header: [u8; 160] = [0; 160]
     writeU32(&mut header, 0, op)
     writeU32(&mut header, 4, mode)
     writeU32(&mut header, 8, opacity)

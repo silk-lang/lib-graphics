@@ -110,6 +110,34 @@ effect fn quads() -> ()
   )
   run Testing.expect(is(image.pixel(70, 10), 0, 0, 0, 0), "a rounded corner pixel is empty")
   run Testing.expect(is(image.pixel(80, 20), 0, 255, 0, 255), "a rounded quad's center is filled")
+
+  // A rounded content mask clips what runs past its corners, directly and through a layer.
+  let mut masked = Scene.make()
+  let card = ContentMask.rounded(rect(10.0, 40.0, 40.0, 40.0), Corners<f32>.uniform(12.0))
+  drop run masked.quad(Quad.fill(rect(0.0, 30.0, 60.0, 60.0), card, Background.solid(color.rgb(0xff0000))))
+  drop run masked.pushIsolatedLayer(rect(50.0, 30.0, 60.0, 60.0), ContentMask.rounded(rect(60.0, 40.0, 40.0, 40.0), Corners<f32>.uniform(12.0)), Isolation { opacity: 1.0, blend: 0 })
+  drop run masked.quad(Quad.fill(rect(50.0, 30.0, 60.0, 60.0), window(), Background.solid(color.rgb(0x0000ff))))
+  run masked.popLayer()
+  let clipped = run render(&mut masked, &pixels)
+  run Testing.expect(is(clipped.pixel(10, 40), 0, 0, 0, 0) && is(clipped.pixel(49, 79), 0, 0, 0, 0), "a rounded mask's corner pixels are empty")
+  run Testing.expect(is(clipped.pixel(30, 40), 255, 0, 0, 255) && is(clipped.pixel(10, 60), 255, 0, 0, 255), "its straight edges clip as a rectangle")
+  run Testing.expect(is(clipped.pixel(60, 40), 0, 0, 0, 0) && is(clipped.pixel(80, 60), 0, 0, 255, 255), "a layer lands inside the rounded mask")
+  // A scroll group with a rounded clip rounds what scrolls inside it.
+  let mut scrolled = Scene.make()
+  let port = rect(10.0, 10.0, 60.0, 60.0)
+  drop run scrolled.pushRoundedScrollGroup(
+    ScrollLink { node: 3, x: ScrollAxis.fixed(), y: ScrollAxis.content() },
+    ContentMask.rounded(port, Corners<f32>.uniform(16.0)),
+    port,
+  )
+  drop run scrolled.quad(Quad.fill(rect(0.0, 0.0, 80.0, 200.0), window(), Background.solid(color.rgb(0x00ff00))))
+  run scrolled.popScrollGroup()
+  run scrolled.setScroll(ScrollPosition { node: 3, x: 0.0, y: 40.0, minX: 0.0, maxX: 0.0, minY: 0.0, maxY: 140.0 })
+  let ported = run render(&mut scrolled, &pixels)
+  run Testing.expect(is(ported.pixel(10, 10), 0, 0, 0, 0) && is(ported.pixel(69, 69), 0, 0, 0, 0), "a rounded scroll group's corners stay empty")
+  run Testing.expect(is(ported.pixel(40, 10), 0, 255, 0, 255), "its content fills the rest")
+  let inner = card.intersect(ContentMask.new(rect(0.0, 46.0, 30.0, 60.0)))
+  run Testing.expect(inner.radii.topLeft == 6.0 && inner.radii.bottomLeft == 12.0 && inner.radii.topRight == 0.0, "an intersection keeps the rounding left at its corners")
 }
 
 test effect fn quadsFillClipAndRound() -> ()

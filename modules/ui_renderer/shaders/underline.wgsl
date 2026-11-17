@@ -7,6 +7,7 @@ struct Underline {
   color: vec4f,
   // thickness, wavy (1 or 0)
   params: vec4f,
+  maskRadii: vec4f,
 }
 @group(0) @binding(1) var<storage, read> underlines: array<Underline>;
 
@@ -26,7 +27,7 @@ const TAU: f32 = 6.283185307179586;
   let thickness = u.params.x;
   var alpha = 0.0;
   if u.params.y == 0.0 {
-    alpha = areaIn(vec4f(b.x, b.y, b.z, min(b.y + thickness, b.w)), p) * areaIn(u.mask, p);
+    alpha = areaIn(vec4f(b.x, b.y, b.z, min(b.y + thickness, b.w)), p) * areaIn(u.mask, p) * cornerCoverage(u.mask, u.maskRadii, p);
   } else {
     // Distance to the wave, to first order: the vertical gap over the slope's length.
     let amplitude = max((b.w - b.y - thickness) * 0.5, 0.0);
@@ -36,7 +37,7 @@ const TAU: f32 = 6.283185307179586;
     let slope = amplitude * k * cos(k * x);
     let distance = abs(gap) / sqrt(1.0 + slope * slope);
     let clipped = vec4f(max(u.mask.xy, b.xy), min(u.mask.zw, b.zw));
-    alpha = clamp(thickness * 0.5 - distance + 0.5, 0.0, 1.0) * areaIn(clipped, p);
+    alpha = clamp(thickness * 0.5 - distance + 0.5, 0.0, 1.0) * areaIn(clipped, p) * cornerCoverage(u.mask, u.maskRadii, p);
   }
   if alpha <= 0.0 { discard; }
   return premultiply(u.color) * alpha;
