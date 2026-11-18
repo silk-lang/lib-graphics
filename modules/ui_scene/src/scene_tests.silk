@@ -1,11 +1,11 @@
 //! Scene tests: draw orders, batch counts on fixture scenes, layers and replay.
 import atlas.atlas { AtlasTile, Kind, TextureId, TileId }
+import radii { Radii }
 import color
 import silk.color.rgba { Rgba }
 import primitives { Background, ContentMask, GlyphSprite, Isolation, Quad, Shadow, Underline, }
 import scene { Batch, Scene }
 import silk.core.effect { Effect }
-import silk.geometry.corners { Corners }
 import silk.geometry.rect { Rect }
 import silk.geometry.vector { Vector2 }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
@@ -29,7 +29,7 @@ pub fn shadowUnder(bounds: Rect<f32>) -> Shadow {
   return Shadow {
     bounds: bounds,
     mask: window(),
-    cornerRadii: Corners<f32>.uniform(6.0),
+    cornerRadii: Radii.uniform(6.0),
     color: color.rgba(0x00000060),
     blurRadius: 8.0,
     offset: Vector2<f32>.new(0.0, 2.0),

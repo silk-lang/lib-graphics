@@ -1,0 +1,205 @@
+//! Elliptical corner radii, as CSS `border-radius`, and the distance to a corner's curve.
+import silk.core.ownership { Copy }
+import silk.geometry.corners { Corners }
+import silk.geometry.rect { Rect }
+import silk.num.f32
+
+/// Corner radii, as CSS `border-radius`: each corner is a quarter ellipse with horizontal radius
+/// `x` and vertical radius `y`, in device pixels, top-left first and clockwise. A corner with
+/// either radius zero is square.
+pub struct Radii {
+  pub x: Corners<f32>,
+  pub y: Corners<f32>,
+}
+
+impl Copy for Radii {}
+
+impl Radii {
+  /// Square corners.
+  pub fn zero() -> Radii {
+    return Radii { x: Corners<f32>.zero(), y: Corners<f32>.zero() }
+  }
+
+  /// Every corner a circle of radius `r`.
+  pub fn uniform(r: f32) -> Radii {
+    return Radii { x: Corners<f32>.uniform(r), y: Corners<f32>.uniform(r) }
+  }
+
+  /// Circular corners, one radius each.
+  pub fn circular(radii: Corners<f32>) -> Radii {
+    return Radii { x: radii, y: radii }
+  }
+
+  /// Elliptical corners with horizontal radii `x` and vertical radii `y`.
+  pub fn new(x: Corners<f32>, y: Corners<f32>) -> Radii {
+    return Radii { x: x, y: y }
+  }
+
+  /// Whether any corner is rounded.
+  pub fn isRounded(self: Self) -> bool {
+    return self.x.topLeft > 0.0 && self.y.topLeft > 0.0 || self.x.topRight > 0.0 && self.y.topRight > 0.0
+      || self.x.bottomRight > 0.0 && self.y.bottomRight > 0.0
+      || self.x.bottomLeft > 0.0 && self.y.bottomLeft > 0.0
+  }
+
+  /// Whether both hold the same radii.
+  pub fn same(self: Self, other: Radii) -> bool {
+    let a = self.x
+    let b = other.x
+    let c = self.y
+    let d = other.y
+    return a.topLeft == b.topLeft && a.topRight == b.topRight && a.bottomRight == b.bottomRight
+      && a.bottomLeft == b.bottomLeft && c.topLeft == d.topLeft && c.topRight == d.topRight
+      && c.bottomRight == d.bottomRight && c.bottomLeft == d.bottomLeft
+  }
+
+  /// Every radius times `s`.
+  pub fn scaled(self: Self, s: f32) -> Radii {
+    return Radii.scaledBy(self, s, s)
+  }
+
+  /// Horizontal radii times `sx`, vertical radii times `sy`.
+  pub fn scaledBy(self: Self, sx: f32, sy: f32) -> Radii {
+    return Radii {
+      x: Corners<f32>.new(self.x.topLeft * sx, self.x.topRight * sx, self.x.bottomRight * sx, self.x.bottomLeft * sx),
+      y: Corners<f32>.new(self.y.topLeft * sy, self.y.topRight * sy, self.y.bottomRight * sy, self.y.bottomLeft * sy),
+    }
+  }
+
+  /// The radii a box of `width` by `height` draws with, as CSS Backgrounds 3 "Overlapping Curves":
+  /// negative radii are zero, a corner with one zero radius is square, and when the radii along
+  /// any side add up to more than its length, all radii shrink by the same factor until none
+  /// overlap.
+  pub fn fitted(self: Self, width: f32, height: f32) -> Radii {
+    let mut r = Radii {
+      x: Corners<f32>.new(
+        positive(self.x.topLeft, self.y.topLeft),
+        positive(self.x.topRight, self.y.topRight),
+        positive(self.x.bottomRight, self.y.bottomRight),
+        positive(self.x.bottomLeft, self.y.bottomLeft),
+      ),
+      y: Corners<f32>.new(
+        positive(self.y.topLeft, self.x.topLeft),
+        positive(self.y.topRight, self.x.topRight),
+        positive(self.y.bottomRight, self.x.bottomRight),
+        positive(self.y.bottomLeft, self.x.bottomLeft),
+      ),
+    }
+    let w = f32.max(width, 0.0)
+    let h = f32.max(height, 0.0)
+    let mut f: f32 = 1.0
+    f = fit(f, w, r.x.topLeft + r.x.topRight)
+    f = fit(f, w, r.x.bottomLeft + r.x.bottomRight)
+    f = fit(f, h, r.y.topLeft + r.y.bottomLeft)
+    f = fit(f, h, r.y.topRight + r.y.bottomRight)
+    if f < 1.0 {
+      r = r.scaled(f)
+    }
+    return r
+  }
+
+  /// [`Radii.fitted`] to `rect`.
+  pub fn fittedTo(self: Self, rect: Rect<f32>) -> Radii {
+    return self.fitted(rect.xMax - rect.xMin, rect.yMax - rect.yMin)
+  }
+
+  /// The radii of the curve `left`, `top`, `right`, `bottom` inside these corners, as a padding
+  /// edge inside a border edge: each radius less the width of the side it meets, never below
+  /// zero. Negative widths move outward.
+  pub fn inset(self: Self, left: f32, top: f32, right: f32, bottom: f32) -> Radii {
+    return Radii {
+      x: Corners<f32>.new(
+        f32.max(self.x.topLeft - left, 0.0),
+        f32.max(self.x.topRight - right, 0.0),
+        f32.max(self.x.bottomRight - right, 0.0),
+        f32.max(self.x.bottomLeft - left, 0.0),
+      ),
+      y: Corners<f32>.new(
+        f32.max(self.y.topLeft - top, 0.0),
+        f32.max(self.y.topRight - top, 0.0),
+        f32.max(self.y.bottomRight - bottom, 0.0),
+        f32.max(self.y.bottomLeft - bottom, 0.0),
+      ),
+    }
+  }
+
+  /// The radii of the curve between `outer` (these corners' box) and `inner`, a box inside it.
+  pub fn insetTo(self: Self, outer: Rect<f32>, inner: Rect<f32>) -> Radii {
+    return self.inset(inner.xMin - outer.xMin, inner.yMin - outer.yMin, outer.xMax - inner.xMax, outer.yMax - inner.yMax)
+  }
+
+  /// The radii of a shadow's shape spread by `spread` (negative shrinks), as CSS Backgrounds 3
+  /// "Shadow Shape": each radius grows by the spread, except that a radius smaller than the
+  /// spread grows by `spread * (1 + (r / spread - 1)^3)`, so a square corner stays square.
+  pub fn spread(self: Self, spread: f32) -> Radii {
+    if spread == 0.0 {
+      return self
+    }
+    return Radii {
+      x: Corners<f32>.new(
+        spreadOne(self.x.topLeft, spread),
+        spreadOne(self.x.topRight, spread),
+        spreadOne(self.x.bottomRight, spread),
+        spreadOne(self.x.bottomLeft, spread),
+      ),
+      y: Corners<f32>.new(
+        spreadOne(self.y.topLeft, spread),
+        spreadOne(self.y.topRight, spread),
+        spreadOne(self.y.bottomRight, spread),
+        spreadOne(self.y.bottomLeft, spread),
+      ),
+    }
+  }
+}
+
+fn positive(r: f32, other: f32) -> f32 {
+  if r > 0.0 && other > 0.0 {
+    return r
+  }
+  return 0.0
+}
+
+fn fit(f: f32, length: f32, sum: f32) -> f32 {
+  if sum > length && sum > 0.0 {
+    return f32.min(f, length / sum)
+  }
+  return f
+}
+
+fn spreadOne(r: f32, spread: f32) -> f32 {
+  if r <= 0.0 {
+    return 0.0
+  }
+  let magnitude = f32.abs(spread)
+  if spread > 0.0 && r < magnitude {
+    let t = r / magnitude - 1.0
+    return r + spread * (1.0 + t * t * t)
+  }
+  return f32.max(r + spread, 0.0)
+}
+
+/// The radius at the corner on the `left` (or right) and `up` (or down) side.
+pub fn cornerOf(c: Corners<f32>, left: bool, up: bool) -> f32 {
+  if left {
+    return if up { c.topLeft } else { c.bottomLeft }
+  }
+  return if up { c.topRight } else { c.bottomRight }
+}
+
+/// Signed distance from a point `dx`, `dy` from a quarter ellipse's center, outward, to the
+/// ellipse with radii `ex`, `ey`: the implicit function over its gradient, exact for a circle
+/// and within a fraction of a pixel near the curve otherwise. Matches the GPU's
+/// `ellipseDistance`.
+pub fn ellipseDistance(dx: f32, dy: f32, ex: f32, ey: f32) -> f32 {
+  let ax = dx / ex
+  let ay = dy / ey
+  let k0 = f32.sqrt(ax * ax + ay * ay)
+  let bx = dx / (ex * ex)
+  let by = dy / (ey * ey)
+  let k1 = f32.sqrt(bx * bx + by * by)
+  if k1 <= 0.0 {
+    return -f32.min(ex, ey)
+  }
+  return k0 * (k0 - 1.0) / k1
+}
+

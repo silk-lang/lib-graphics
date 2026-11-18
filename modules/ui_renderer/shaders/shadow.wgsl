@@ -4,17 +4,17 @@ struct Shadow {
   // The blurred shape: the box moved by the offset and grown (or, inset, shrunk) by the spread.
   shape: vec4f,
   mask: vec4f,
-  shapeRadii: vec4f,
+  shapeRadii: Radii,
   // straight alpha
   color: vec4f,
   // The box casting the shadow; an inset shadow draws only inside it.
   box: vec4f,
-  boxRadii: vec4f,
+  boxRadii: Radii,
   // Everything the shadow can touch.
   reach: vec4f,
   // sigma, inset (1 or 0), the transform
   params: vec4f,
-  maskRadii: vec4f,
+  maskRadii: Radii,
 }
 @group(0) @binding(1) var<storage, read> shadows: array<Shadow>;
 
@@ -43,11 +43,19 @@ fn erf2(v: vec2f) -> vec2f {
   return s - s / (r2 * r2);
 }
 
+// How far row `y` (from the center) of a box of half size `half` reaches out from the center on
+// the side of the corner with radii `e`.
+fn reachAt(y: f32, e: vec2f, half: vec2f) -> f32 {
+  if e.x <= 0.0 || e.y <= 0.0 { return half.x; }
+  let delta = min(half.y - e.y - abs(y), 0.0) / e.y;
+  return half.x - e.x + e.x * sqrt(max(0.0, 1.0 - delta * delta));
+}
+
 // The blurred coverage of one row `y` (from the center) of the rounded box, at `x`.
-fn blurAlongX(x: f32, y: f32, sigma: f32, radius: f32, half: vec2f) -> f32 {
-  let delta = min(half.y - radius - abs(y), 0.0);
-  let curved = half.x - radius + sqrt(max(0.0, radius * radius - delta * delta));
-  let integral = 0.5 + 0.5 * erf2((x + vec2f(-curved, curved)) * (SQRT_HALF / sigma));
+fn blurAlongX(x: f32, y: f32, sigma: f32, radii: Radii, half: vec2f) -> f32 {
+  let left = reachAt(y, pickRadii(vec2f(-1.0, y), radii), half);
+  let right = reachAt(y, pickRadii(vec2f(1.0, y), radii), half);
+  let integral = 0.5 + 0.5 * erf2((x + vec2f(-right, left)) * (SQRT_HALF / sigma));
   return integral.y - integral.x;
 }
 
@@ -65,14 +73,13 @@ fn blurAlongX(x: f32, y: f32, sigma: f32, radius: f32, half: vec2f) -> f32 {
     } else {
       let half = (s.shape.zw - s.shape.xy) * 0.5;
       let q = p - (s.shape.xy + half);
-      let radius = clamp(pickRadius(q, s.shapeRadii), 0.0, min(half.x, half.y));
       // The kernel is only non-zero over the shape's rows within 3 sigma.
       let start = clamp(-3.0 * sigma, q.y - half.y, q.y + half.y);
       let end = clamp(3.0 * sigma, q.y - half.y, q.y + half.y);
       let step = (end - start) / f32(SAMPLES);
       var y = start + step * 0.5;
       for (var i = 0; i < SAMPLES; i += 1) {
-        alpha += blurAlongX(q.x, q.y - y, sigma, radius, half) * gaussian(y, sigma) * step;
+        alpha += blurAlongX(q.x, q.y - y, sigma, s.shapeRadii, half) * gaussian(y, sigma) * step;
         y += step;
       }
     }

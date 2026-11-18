@@ -16,7 +16,7 @@ struct Run {
 struct PathRecord {
   mask: vec4f,
   paint: Paint,
-  maskRadii: vec4f,
+  maskRadii: Radii,
 }
 @group(0) @binding(1) var<storage, read> runs: array<Run>;
 @group(0) @binding(2) var<storage, read> paths: array<PathRecord>;

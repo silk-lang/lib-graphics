@@ -4,7 +4,7 @@ description = "UI frame primitives ordered and batched for a GPU, with a CPU ref
 version = "0.1.0"
 silk-version = "0.1.0-dev.85+45b9e51824ca"
 kind = "library"
-exports = ["effects", "color", "primitives", "bounds_tree", "scene", "scroll", "path_cache", "cpu"]
+exports = ["radii", "effects", "color", "primitives", "bounds_tree", "scene", "scroll", "path_cache", "cpu"]
 
 [dependencies]
 vector = { path = "../vector", package = "graphics-vector" }
