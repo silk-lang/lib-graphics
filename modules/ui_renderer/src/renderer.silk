@@ -630,6 +630,30 @@ fn inlines(scene: &Scene, sprite: &LayerSprite) -> bool {
     && scene.paths(sprite.layer).length == 0
 }
 
+/// Whether the slow composite of `sprite`, or of a layer inside it, filters through the pool's
+/// scratch textures: a layer blur, a color filter, a drop shadow, a mask, or a backdrop blur too
+/// narrow for the blur pyramid. A wide backdrop blur alone needs none of them.
+fn scratches(scene: &Scene, sprite: &LayerSprite) -> bool {
+  let effects = sprite.effects
+  if effects.blur > 0.0 || effects.hasColor() || effects.hasShadow()
+    || effects.backdropBlur > 0.0 && effects.backdropBlur < FAST_SIGMA {
+    return true
+  }
+  let mask = scene.maskOf(sprite.layer)
+  if mask != NO_MASK {
+    return true
+  }
+  let inside = scene.layers(sprite.layer)
+  let mut i: usize = 0
+  while i < inside.length {
+    if scratches(scene, &inside[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}
+
 /// Whether `layer` holds a layer that blurs what is under it, which reads its whole texture.
 fn blursBackdrop(scene: &Scene, layer: u32) -> bool {
   let sprites = scene.layers(layer)
@@ -762,6 +786,9 @@ pub struct UiRenderer {
   rootSlow: bool,
   /// Whether any layer is composited the slow way.
   anySlow: bool,
+  /// Whether a slow composite of this frame filters through the pool's three scratch textures
+  /// (see `scratches`); they stay one pixel large until one does.
+  scratch: bool,
   /// For each layer of the scene: the `Transform` it is drawn through straight onto its
   /// parent's surface, or 0 for a layer that is drawn into a texture (see `planInline`).
   inline: List<u32>,
@@ -829,6 +856,7 @@ impl UiRenderer {
       assigned: List<u32>.make(),
       rootSlow: false,
       anySlow: false,
+      scratch: false,
       inline: List<u32>.make(),
       transforms: List<u8>.make(),
       newer: List<ScrollPosition>.make(),
@@ -1396,7 +1424,8 @@ impl UiRenderer {
       let mut oversized = self.layers.length() > 0
       let mut k: usize = 0
       while k < self.layers.length() {
-        if k != 1 || !self.rootSlow {
+        let unused = !self.scratch && k + 3 >= self.layers.length()
+        if (k != 1 || !self.rootSlow) && !unused {
           let image = &self.layers.asSlice()[k]
           oversized = oversized
             && u32.toU64(image.width) * u32.toU64(image.height)
@@ -1414,8 +1443,9 @@ impl UiRenderer {
       k = 0
       while k < u32.toUsize(count) {
         let root = k == 1 && self.rootSlow
-        let wantWidth = if root { width } else { needWidth }
-        let wantHeight = if root { height } else { needHeight }
+        let spare = !self.scratch && k + 3 >= u32.toUsize(count)
+        let wantWidth = if root { width } else if spare { 1 } else { needWidth }
+        let wantHeight = if root { height } else if spare { 1 } else { needHeight }
         if k < self.layers.length() {
           let image = &self.layers.asSlice()[k]
           let small = image.width < wantWidth || image.height < wantHeight
@@ -1436,7 +1466,20 @@ impl UiRenderer {
       }
     }
     run self.sizePages(device, queue, width, height)
-    let passes = compositesOf(scene, 0) + 1
+    // A layer drawn inline takes no pass of its own.
+    let mut inlined: usize = 0
+    let mut l: usize = 0
+    while l < self.inline.length() {
+      if self.inline.get(l) != 0 {
+        inlined = inlined + 1
+      }
+      l = l + 1
+    }
+    let passes = compositesOf(scene, 0) + 1 - inlined
+    // A frame of far fewer passes than an earlier one gives the uniforms back.
+    if self.params.length() > passes * 2 + 64 {
+      self.params.truncate(passes + 32)
+    }
     let zeros: [u8; PARAMS_BYTES] = [0; PARAMS_BYTES]
     while self.params.length() < passes {
       let buffer = run storage(
@@ -1463,6 +1506,7 @@ impl UiRenderer {
     run self.assigned.appendRepeated(NOT_PLANNED, u32.toUsize(scene.layerCount()))
     self.rootSlow = false
     self.anySlow = false
+    self.scratch = false
     self.fullPages = 0
     self.poolWidth = 0
     self.poolHeight = 0
@@ -1693,6 +1737,9 @@ impl UiRenderer {
         }
         if !planned {
           self.anySlow = true
+          if !self.scratch {
+            self.scratch = scratches(scene, &sprite)
+          }
           if layer == 0 {
             self.rootSlow = true
           }
