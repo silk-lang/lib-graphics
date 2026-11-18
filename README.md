@@ -33,12 +33,12 @@ packages from `nonstd` will fail, even when their version strings match.
 
 ## Toolchain and builds
 
-Use Silk **0.1.0-dev.74+205aea3f5b2e**, LLVM **22** including `clang` and `wasm-ld`,
+Use Silk **0.1.0-dev.87+37fa5f8857de**, LLVM **22** including `clang` and `wasm-ld`,
 and Git. `SILK_CLANG` selects an absolute LLVM 22 clang. The standard library ships
 with the compiler. Bootstrap Silk with its official installer before running tasks:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.sh | SILK_RELEASE='v0.1.0-dev.74+205aea3f5b2e' sh
+curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.sh | SILK_RELEASE='v0.1.0-dev.87+37fa5f8857de' sh
 export PATH="$HOME/.silk/bin:$PATH"
 export SILK_CLANG=/absolute/path/to/llvm22/bin/clang
 silk task
@@ -49,7 +49,7 @@ silk build --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32
 ```
 
 Silk owns dependency fetching, native archives, C compilation, linking and tests.
-Build outputs are under `build/llvm/<target>/<debug|release>/`; Windows native
+Build outputs are under `build/<target>/<dev|release>/`; Windows native
 executables have `.exe`. CPU-only work needs no GPU runtime:
 
 ```sh
@@ -74,12 +74,12 @@ shorter 300-second build/Callgrind and 120-second sample deadlines.
   and PowerShell. Install Silk with the official installer:
 
   ```powershell
-  $env:SILK_RELEASE = 'v0.1.0-dev.74+205aea3f5b2e'
+  $env:SILK_RELEASE = 'v0.1.0-dev.87+37fa5f8857de'
   irm https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.ps1 | iex
   silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
   silk task prepare-windows
   silk build --manifest-path modules/ui_renderer/tests/silk.toml
-  silk task prepare-windows --runtime-directory build/llvm/x86_64-pc-windows-msvc/debug
+  silk task prepare-windows --runtime-directory build/x86_64-pc-windows-msvc/dev
   ```
 
 `silk task setup-ci --linux-gpu` and `silk task setup-ci --browser` delegate to

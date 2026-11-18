@@ -6,7 +6,7 @@ struct PolySprite {
   tile: vec4f,
   clipBounds: vec4f,
   radii: vec4f,
-  // opacity, grayscale (1 or 0), quarter turns, nearest (1 or 0)
+  // opacity, flags (1 grayscale, 2 nearest), quarter turns, the transform
   params: vec4f,
   maskRadii: vec4f,
 }
@@ -25,24 +25,27 @@ fn cameraSprite(source: PolySprite) -> PolySprite {
 
 @vertex fn vs(@builtin(vertex_index) v: u32, @builtin(instance_index) index: u32) -> Varying {
   let s = cameraSprite(sprites[index]);
-  return Varying(corner(cover(s.bounds, s.mask), v), index);
+  let placed = place(s.bounds, s.mask, u32(s.params.w), v);
+  return Varying(placed.position, index, placed.local);
 }
 
 @fragment fn fs(v: Varying) -> @location(0) vec4f {
   let s = cameraSprite(sprites[v.index]);
-  let p = v.position.xy + globals.origin.xy;
+  let at = spot(v.position, v.local, u32(s.params.w));
+  let p = at.p;
   let radii = clamp(s.radii, vec4f(0.0), vec4f(max(min(s.clipBounds.z - s.clipBounds.x, s.clipBounds.w - s.clipBounds.y) * 0.5, 0.0)));
-  let weight = coverage(roundedRectSdf(p, s.clipBounds, radii)) * clamp(s.params.x, 0.0, 1.0) * areaIn(s.mask, p) * cornerCoverage(s.mask, s.maskRadii, p);
+  let weight = roundedCoverage(p, s.clipBounds, radii, at.scale) * clamp(s.params.x, 0.0, 1.0) * areaInAt(s.mask, p, at.scale) * cornerCoverageAt(s.mask, s.maskRadii, p, at.scale) * at.keep;
   if weight <= 0.0 { discard; }
   var uv = (p - s.bounds.xy) / (s.bounds.zw - s.bounds.xy);
   let turn = u32(s.params.z);
   if turn == 1u { uv = vec2f(uv.y, 1.0 - uv.x); }
   if turn == 2u { uv = vec2f(1.0) - uv; }
   if turn == 3u { uv = vec2f(1.0 - uv.y, uv.x); }
-  let at = s.bounds.xy + uv * (s.bounds.zw - s.bounds.xy);
+  let q = s.bounds.xy + uv * (s.bounds.zw - s.bounds.xy);
+  let flags = u32(s.params.y);
   var c: vec4f;
-  if s.params.w != 0.0 { c = nearestTile(s.tile, s.bounds, at); } else { c = sampleTile(s.tile, s.bounds, at); }
-  if s.params.y != 0.0 {
+  if (flags & 2u) != 0u { c = nearestTile(s.tile, s.bounds, q); } else { c = sampleTile(s.tile, s.bounds, q); }
+  if (flags & 1u) != 0u {
     let l = dot(c.rgb, vec3f(0.2126, 0.7152, 0.0722));
     c = vec4f(l, l, l, c.a);
   }

@@ -13,11 +13,15 @@ struct Quad {
 }
 @group(0) @binding(1) var<storage, read> quads: array<Quad>;
 
-struct Varying { @builtin(position) position: vec4f, @location(0) @interpolate(flat) index: u32 }
+struct Varying { @builtin(position) position: vec4f, @location(0) @interpolate(flat) index: u32, @location(1) local: vec2f }
+
+// A quad's transform rides in the spare word of its paint.
+fn transformOf(q: Quad) -> u32 { return u32(q.paint.stops.w); }
 
 @vertex fn vs(@builtin(vertex_index) v: u32, @builtin(instance_index) index: u32) -> Varying {
   let q = quads[index];
-  return Varying(corner(cover(q.bounds, q.mask), v), index);
+  let placed = place(q.bounds, q.mask, transformOf(q), v);
+  return Varying(placed.position, index, placed.local);
 }
 
 const PI: f32 = 3.141592653589793;
@@ -92,11 +96,14 @@ fn dashCoverage(s: f32, w: f32) -> f32 {
 
 @fragment fn fs(v: Varying) -> @location(0) vec4f {
   let q = quads[v.index];
-  let p = v.position.xy + globals.origin.xy;
-  let clip = areaIn(q.mask, p) * cornerCoverage(q.mask, q.maskRadii, p);
+  let at = spot(v.position, v.local, transformOf(q));
+  let p = at.p;
+  let clip = areaInAt(q.mask, p, at.scale) * cornerCoverageAt(q.mask, q.maskRadii, p, at.scale) * at.keep;
   if clip <= 0.0 { discard; }
+  // The device pixels in one of the quad's, for the edges no normal is known for.
+  let unit = sqrt(at.scale.x * at.scale.y);
   let radii = clampedRadii(q.bounds, q.radii);
-  let outer = coverage(roundedRectSdf(p, q.bounds, radii));
+  let outer = roundedCoverage(p, q.bounds, radii, at.scale);
   let background = shade(q.paint, p) * outer;
 
   var border = vec4f(0.0);
@@ -112,7 +119,7 @@ fn dashCoverage(s: f32, w: f32) -> f32 {
       if c.x >= 0.0 && c.y < 0.0 { e = vec2f(radii.y - w.y, radii.y - w.x); }
       if c.x >= 0.0 && c.y >= 0.0 { e = vec2f(radii.z - w.y, radii.z - w.z); }
       if c.x < 0.0 && c.y >= 0.0 { e = vec2f(radii.w - w.w, radii.w - w.z); }
-      inside = coverage(ellipticRectSdf(p, inner, max(e, vec2f(0.0))));
+      inside = coverage(ellipticRectSdf(p, inner, max(e, vec2f(0.0))) * unit);
     }
     var band = max(outer - inside, 0.0);
     if q.paint.kind.z == 1u && band > 0.0 {
@@ -123,7 +130,7 @@ fn dashCoverage(s: f32, w: f32) -> f32 {
       let tr = max(vec2f(radii.y - w.y * 0.5, radii.y - w.x * 0.5), vec2f(0.0));
       let br = max(vec2f(radii.z - w.y * 0.5, radii.z - w.z * 0.5), vec2f(0.0));
       let bl = max(vec2f(radii.w - w.w * 0.5, radii.w - w.z * 0.5), vec2f(0.0));
-      band = band * dashCoverage(perimeterPosition(p, mid, tl, tr, br, bl), widest);
+      band = band * dashCoverage(perimeterPosition(p, mid, tl, tr, br, bl) * unit, widest * unit);
     }
     border = premultiply(q.borderColor) * band;
   }

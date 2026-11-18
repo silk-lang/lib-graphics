@@ -12,7 +12,7 @@ import support
 pub effect fn embedShaders(check: bool) -> ()
   ! TaskError | FileError | HostInputError | OutOfMemoryError ? &mut HostInput | &mut Allocator | &mut FileSystem {
   run shaderSet("modules/gpu_scene", &["scene", "blend+compose", "blend+filter"], check)
-  run shaderSet("modules/ui_renderer", &["common+quad", "common+shadow", "common+underline", "common+sprite+mono", "common+sprite+poly", "common+path", "../../gpu_scene/shaders/blend+layer"], check)
+  run shaderSet("modules/ui_renderer", &["common+quad", "common+shadow", "common+underline", "common+sprite+mono", "common+sprite+poly", "common+path", "../../gpu_scene/shaders/blend+layer", "blur"], check)
 }
 
 effect fn shaderSet(directory: string, shaders: &[string], check: bool) -> ()

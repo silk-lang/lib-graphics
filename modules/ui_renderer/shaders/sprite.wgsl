@@ -25,4 +25,4 @@ fn nearestTile(tile: vec4f, bounds: vec4f, p: vec2f) -> vec4f {
   return textureLoad(atlas, vec2u(tile.xy + i), 0);
 }
 
-struct Varying { @builtin(position) position: vec4f, @location(0) @interpolate(flat) index: u32 }
+struct Varying { @builtin(position) position: vec4f, @location(0) @interpolate(flat) index: u32, @location(1) local: vec2f }

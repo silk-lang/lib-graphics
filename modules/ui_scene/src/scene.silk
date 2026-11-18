@@ -44,7 +44,7 @@ import silk.num.usize
 import vector.strips { Fill, Strip }
 import effects { LayerEffects }
 import bounds_tree { BoundsTree }
-import scroll { ScrollGroup, ScrollLink, ScrollPosition, ScrollAxis, ROOT_GROUP }
+import scroll { ScrollGroup, ScrollIndex, ScrollLink, ScrollPosition, ScrollAxis, ROOT_GROUP }
 import color
 import primitives {
   Background,
@@ -226,9 +226,49 @@ impl<T: Copy> Items<T> {
     run self.keys.appendSlice(other.keys.asSlice())
   }
 
+  /// Gives back the room its lists do not use.
+  effect fn shrink(self: &mut Self) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    run self.added.shrinkToFit()
+    run self.orders.shrinkToFit()
+    run self.textures.shrinkToFit()
+    run self.groups.shrinkToFit()
+    run self.sorted.shrinkToFit()
+    run self.sortedOrders.shrinkToFit()
+    run self.sortedTextures.shrinkToFit()
+    run self.sortedGroups.shrinkToFit()
+    run self.keys.shrinkToFit()
+  }
+
+  /// Takes the sorted lists of `other`, what drawing reads, and leaves the rest empty.
+  effect fn copyDrawnFrom(self: &mut Self, other: &Items<T>) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    self.clear()
+    self.keys.clear()
+    // Room for an eighth more than is needed, when more is needed: a frame that adds a little
+    // each time (text as it streams in) then moves these lists now and then, not every frame.
+    let count = other.sorted.length()
+    if self.sorted.capacity() < count { run self.sorted.reserveExact(count + count / 8) }
+    if self.sortedOrders.capacity() < count { run self.sortedOrders.reserveExact(count + count / 8) }
+    if self.sortedTextures.capacity() < count { run self.sortedTextures.reserveExact(count + count / 8) }
+    if self.sortedGroups.capacity() < count { run self.sortedGroups.reserveExact(count + count / 8) }
+    run self.sorted.appendSlice(other.sorted.asSlice())
+    run self.sortedOrders.appendSlice(other.sortedOrders.asSlice())
+    run self.sortedTextures.appendSlice(other.sortedTextures.asSlice())
+    run self.sortedGroups.appendSlice(other.sortedGroups.asSlice())
+  }
+
   effect fn push(self: &mut Self, item: T, order: u32, texture: u32, group: u32) -> u32
     ! OutOfMemoryError
     ? &mut Allocator {
+    if self.added.capacity() == 0 {
+      // A list grows to four items at first. Most layers hold one primitive (a box moved by a
+      // transform is a layer of its own), and a scene of thousands of them keeps that room in
+      // every copy of the frame: the first item takes room for one.
+      run self.added.reserveExact(1)
+    }
     run self.added.reserve(1)
     run self.orders.reserve(1)
     run self.textures.reserve(1)
@@ -273,10 +313,12 @@ impl<T: Copy> Items<T> {
     self.sortedTextures.clear()
     self.sortedGroups.clear()
     let count = self.added.length()
-    run self.sorted.reserve(count)
-    run self.sortedOrders.reserve(count)
-    run self.sortedTextures.reserve(count)
-    run self.sortedGroups.reserve(count)
+    // The lists are empty here, so nothing is copied when they are made again; an eighth more
+    // than is needed, so that a frame a little larger than the last does not make them again.
+    if self.sorted.capacity() < count { run self.sorted.reserveExact(count + count / 8) }
+    if self.sortedOrders.capacity() < count { run self.sortedOrders.reserveExact(count + count / 8) }
+    if self.sortedTextures.capacity() < count { run self.sortedTextures.reserveExact(count + count / 8) }
+    if self.sortedGroups.capacity() < count { run self.sortedGroups.reserveExact(count + count / 8) }
     let mut i: usize = 0
     while i < count {
       let start = i
@@ -392,6 +434,34 @@ impl LayerData {
     run self.glyphs.copyFrom(&other.glyphs)
     run self.images.copyFrom(&other.images)
     run self.layers.copyFrom(&other.layers)
+    self.batches.clear()
+    run self.batches.appendSlice(other.batches.asSlice())
+  }
+
+  effect fn shrink(self: &mut Self) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    run self.shadows.shrink()
+    run self.quads.shrink()
+    run self.paths.shrink()
+    run self.underlines.shrink()
+    run self.glyphs.shrink()
+    run self.images.shrink()
+    run self.layers.shrink()
+    run self.batches.shrinkToFit()
+  }
+
+  effect fn copyDrawnFrom(self: &mut Self, other: &LayerData) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    self.tree.clear()
+    run self.shadows.copyDrawnFrom(&other.shadows)
+    run self.quads.copyDrawnFrom(&other.quads)
+    run self.paths.copyDrawnFrom(&other.paths)
+    run self.underlines.copyDrawnFrom(&other.underlines)
+    run self.glyphs.copyDrawnFrom(&other.glyphs)
+    run self.images.copyDrawnFrom(&other.images)
+    run self.layers.copyDrawnFrom(&other.layers)
     self.batches.clear()
     run self.batches.appendSlice(other.batches.asSlice())
   }
@@ -616,11 +686,18 @@ pub struct Scene {
   groupTrees: List<BoundsTree>,
   treesUsed: u32,
   scrollPositions: List<ScrollPosition>,
+  /// Where each node's position is in `scrollPositions`.
+  scrollIndex: ScrollIndex,
   /// Every [`Scene.setScroll`] call, for replay.
   scrollLog: List<ScrollPosition>,
+  /// How many frames in a row have used under half of the layers the scene keeps (see `trim`).
+  slack: u32,
   /// The stops of every [`StopsGradient`] in the frame.
   stops: List<ColorStop>,
 }
+
+/// Frames a scene keeps storage that under half of it is used of (see `Scene.trim`).
+const TRIM_FRAMES: u32 = 240
 
 fn maxU32(a: u32, b: u32) -> u32 {
   if a > b {
@@ -660,6 +737,13 @@ fn clipped(bounds: Rect<f32>, mask: ContentMask) -> Rect<f32> {
   )
 }
 
+fn sameMask(a: ContentMask, b: ContentMask) -> bool {
+  return a.bounds.xMin == b.bounds.xMin && a.bounds.yMin == b.bounds.yMin
+    && a.bounds.xMax == b.bounds.xMax && a.bounds.yMax == b.bounds.yMax
+    && a.radii.topLeft == b.radii.topLeft && a.radii.topRight == b.radii.topRight
+    && a.radii.bottomRight == b.radii.bottomRight && a.radii.bottomLeft == b.radii.bottomLeft
+}
+
 fn isVisible(bounds: Rect<f32>) -> bool {
   return bounds.xMin < bounds.xMax && bounds.yMin < bounds.yMax
 }
@@ -689,7 +773,9 @@ impl Scene {
       groupTrees: List<BoundsTree>.make(),
       treesUsed: 0,
       scrollPositions: List<ScrollPosition>.make(),
+      scrollIndex: ScrollIndex.make(),
       scrollLog: List<ScrollPosition>.make(),
+      slack: 0,
       stops: List<ColorStop>.make(),
     }
   }
@@ -717,9 +803,93 @@ impl Scene {
     run self.fills.appendSlice(other.fills.asSlice())
     run self.alphas.appendSlice(other.alphas.asSlice())
     run self.groups.appendSlice(other.groups.asSlice())
+    let first = self.scrollPositions.length()
     run self.scrollPositions.appendSlice(other.scrollPositions.asSlice())
+    let mut at = first
+    while at < self.scrollPositions.length() {
+      let node = self.scrollPositions.get(at).node
+      if ScrollIndex.holds(node) && self.scrollIndex.find(node) == usize.MAX {
+        run self.scrollIndex.set(node, at)
+      }
+      at = at + 1
+    }
     run self.scrollLog.appendSlice(other.scrollLog.asSlice())
     run self.stops.appendSlice(other.stops.asSlice())
+  }
+
+  /// Makes this scene what a renderer reads of `other`, which is finished: every layer's
+  /// sorted primitives and batches, the masks, the paths' coverage, the scroll groups and
+  /// positions and the gradient stops, reusing this scene's storage. It leaves out what only
+  /// painting on needs (the primitives as added, the order trees, the replay log), so a frame
+  /// handed to a render thread takes about half of a copy. Do not paint into the result.
+  pub effect fn copyDrawnFrom(self: &mut Self, other: &Scene) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    self.clear()
+    while self.layerData.length() < u32.toUsize(other.layersUsed) {
+      run self.layerData.append(LayerData.make())
+    }
+    let mut i: usize = 0
+    while i < u32.toUsize(other.layersUsed) {
+      run self.layerData.asMutSlice()[i].copyDrawnFrom(&other.layerData.asSlice()[i])
+      i = i + 1
+    }
+    self.layersUsed = other.layersUsed
+    run self.masks.appendSlice(other.masks.asSlice())
+    run self.strips.appendSlice(other.strips.asSlice())
+    run self.fills.appendSlice(other.fills.asSlice())
+    run self.alphas.appendSlice(other.alphas.asSlice())
+    run self.groups.appendSlice(other.groups.asSlice())
+    run self.scrollPositions.appendSlice(other.scrollPositions.asSlice())
+    let mut at: usize = 0
+    while at < self.scrollPositions.length() {
+      let node = self.scrollPositions.get(at).node
+      if ScrollIndex.holds(node) && self.scrollIndex.find(node) == usize.MAX {
+        run self.scrollIndex.set(node, at)
+      }
+      at = at + 1
+    }
+    run self.stops.appendSlice(other.stops.asSlice())
+    run self.trim()
+  }
+
+  /// Gives back the storage a much larger frame left. A scene keeps its storage between frames
+  /// so that painting allocates nothing; after [`TRIM_FRAMES`] frames in a row that use under
+  /// half of its layers, it drops the layers past those and shrinks the lists of what is left
+  /// to what they hold.
+  effect fn trim(self: &mut Self) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    let used = u32.toUsize(self.layersUsed)
+    if self.layerData.length() <= used * 2 + 32 {
+      self.slack = 0
+      return
+    }
+    self.slack = self.slack + 1
+    if self.slack < TRIM_FRAMES {
+      return
+    }
+    self.slack = 0
+    while self.layerData.length() > used + 16 {
+      drop self.layerData.pop()
+    }
+    run self.layerData.shrinkToFit()
+    let data = self.layerData.asMutSlice()
+    let mut i: usize = 0
+    while i < used {
+      run data[i].shrink()
+      i = i + 1
+    }
+    run self.masks.shrinkToFit()
+    run self.operations.shrinkToFit()
+    run self.pushes.shrinkToFit()
+    run self.strips.shrinkToFit()
+    run self.fills.shrinkToFit()
+    run self.alphas.shrinkToFit()
+    run self.groups.shrinkToFit()
+    run self.scrollPositions.shrinkToFit()
+    run self.scrollLog.shrinkToFit()
+    run self.stops.shrinkToFit()
   }
 
   /// Empties the scene for the next frame and keeps its storage.
@@ -741,6 +911,7 @@ impl Scene {
     self.groups.clear()
     self.treesUsed = 0
     self.scrollPositions.clear()
+    self.scrollIndex.clear()
     self.scrollLog.clear()
     self.stops.clear()
   }
@@ -914,6 +1085,29 @@ impl Scene {
     let index = run self.current().glyphs.push(sprite, order, sprite.tile.texture.index, group)
     run self.log(4, index)
     return order
+  }
+
+  /// Adds the glyphs that operations `from .. to` of `previous` added, which follow one another
+  /// on a line within `reach` under the mask `mask`, at one draw order: that of `reach`, which
+  /// is over everything any of them is over.
+  effect fn glyphLine(self: &mut Self, previous: &Scene, from: usize, to: usize, reach: Rect<f32>, mask: ContentMask) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    let order = run self.place(reach, mask)
+    if order == 0 {
+      return
+    }
+    let group = self.group()
+    let mut i = from
+    while i < to {
+      let op = previous.operations.get(i)
+      let sprite = previous.layerData.asSlice()[u32.toUsize(op.layer)].glyphs.added.get(u32.toUsize(op.index))
+      if !color.isTransparent(sprite.color) && isVisible(clipped(sprite.bounds, sprite.mask)) {
+        let index = run self.current().glyphs.push(sprite, order, sprite.tile.texture.index, group)
+        run self.log(4, index)
+      }
+      i = i + 1
+    }
   }
 
   /// Adds an image sprite and returns its draw order, or 0 when it is hidden.
@@ -1258,6 +1452,16 @@ impl Scene {
     let logged = usize.toU32(self.scrollLog.length())
     run self.scrollLog.append(position)
     run self.log(OP_SCROLL, logged)
+    if ScrollIndex.holds(position.node) {
+      let at = self.scrollIndex.find(position.node)
+      if at != usize.MAX {
+        self.scrollPositions.set(at, position)
+        return
+      }
+      run self.scrollIndex.set(position.node, self.scrollPositions.length())
+      run self.scrollPositions.append(position)
+      return
+    }
     let list = self.scrollPositions.asMutSlice()
     let mut i: usize = 0
     while i < list.length {
@@ -1335,7 +1539,35 @@ impl Scene {
       } else if op.kind == 3 {
         drop run self.underline(data.underlines.added.get(at))
       } else if op.kind == 4 {
-        drop run self.glyph(data.glyphs.added.get(at))
+        // The glyphs of a line that follow one another take one place in the draw order
+        // between them: a line of text is placed once, not once a glyph.
+        let first = data.glyphs.added.get(at)
+        let mut reach = first.bounds
+        let mut next = i + 1
+        while next < last {
+          let after = previous.operations.get(next)
+          if after.kind != 4 || after.layer != op.layer {
+            break
+          }
+          let sprite = data.glyphs.added.get(u32.toUsize(after.index))
+          if sprite.tile.texture.index != first.tile.texture.index || !sameMask(sprite.mask, first.mask)
+            || !(sprite.bounds.yMin < reach.yMax && sprite.bounds.yMax > reach.yMin) {
+            break
+          }
+          reach = Rect<f32>.new(
+            f32.min(reach.xMin, sprite.bounds.xMin),
+            f32.min(reach.yMin, sprite.bounds.yMin),
+            f32.max(reach.xMax, sprite.bounds.xMax),
+            f32.max(reach.yMax, sprite.bounds.yMax),
+          )
+          next = next + 1
+        }
+        if next == i + 1 {
+          drop run self.glyph(first)
+        } else {
+          run self.glyphLine(previous, i, next, reach, first.mask)
+          i = next - 1
+        }
       } else if op.kind == 5 {
         drop run self.image(data.images.added.get(at))
       } else if op.kind == OP_PUSH_PINNED {
@@ -1416,6 +1648,8 @@ impl Scene {
       run data[i].buildBatches()
       i = i + 1
     }
+    drop data
+    run self.trim()
   }
 
   /// The number of layers: 1 for the window plus one per isolated layer (0 for an unused scene).

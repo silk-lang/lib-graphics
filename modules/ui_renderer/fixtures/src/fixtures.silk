@@ -1095,7 +1095,10 @@ pub effect fn roundedMasks(scene: &mut Scene, tiles: &mut Tiles) -> ()
     Isolation { opacity: 1.0, blend: 0 },
     Matrix3<f32>.new([c, n, 0.0, -n, c, 0.0, 185.0 - c * 185.0 + n * 135.0, 135.0 - n * 185.0 - c * 135.0, 1.0]),
   )
-  drop run scene.quad(Quad.fill(rect(130.0, 90.0, 110.0, 90.0), window(), Background.solid(color.rgb(0xdc2626))))
+  // Inside the layer nothing clips the quad, as a tree paints a transformed box: a mask ending
+  // on the quad's own edges would take their coverage twice once the edges are turned.
+  let unclipped = ContentMask.new(rect(-1000.0, -1000.0, 3000.0, 3000.0))
+  drop run scene.quad(Quad.fill(rect(130.0, 90.0, 110.0, 90.0), unclipped, Background.solid(color.rgb(0xdc2626))))
   run scene.popLayer()
 }
 

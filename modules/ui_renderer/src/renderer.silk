@@ -35,7 +35,7 @@ import silk.num.u8
 import silk.num.usize
 import webgpu.resources as gpu
 import webgpu.resources {
-  BindGroup,
+  Texture,
   Buffer,
   CommandEncoder,
   Queue,
@@ -72,6 +72,8 @@ import ui_scene.primitives { ContentMask, LayerSprite }
 import ui_scene.scene { PrimitiveKind, Scene, NO_MASK }
 import ui_scene.scroll { Placements, ScrollPosition }
 import atlas_textures { GpuAtlas }
+import blur { BlurPyramid, Blurred, FAST_SIGMA }
+import draws { Draws }
 import instances {
   Instances,
   MONO_BYTES,
@@ -80,6 +82,7 @@ import instances {
   QUAD_BYTES,
   RUN_BYTES,
   SHADOW_BYTES,
+  TRANSFORM_BYTES,
   UNDERLINE_BYTES,
 }
 import text { TextSettings }
@@ -108,6 +111,16 @@ const ALPHAS: usize = 8
 
 const RAMPS: usize = 9
 
+const TRANSFORMS: usize = 10
+
+/// In a [`Draws`] key: the pipelines that draw onto the target, and onto a layer texture.
+const SET_TARGET: u32 = 0
+
+const SET_OFFSCREEN: u32 = 1
+
+/// In a [`Draws`] key: the globals of a slow layer's content come after those of the pages.
+const REGION_GLOBALS: u32 = 0x10000
+
 const OP_COMPOSITE: u32 = 0
 
 const OP_COPY: u32 = 1
@@ -119,13 +132,13 @@ const MAX_PAGES: usize = 12
 
 /// Page textures grow in steps of this many pixels, so that layers moving a little each frame
 /// keep their texture.
-const PAGE_STEP: u32 = 128
+const PAGE_STEP: u32 = 64
 
 /// Frames a page texture may stay much larger than its layers need before it is replaced.
 const SHRINK_FRAMES: u32 = 120
 
 /// Bytes of `shaders/layer.wgsl`'s `Params`.
-const PARAMS_BYTES: usize = 176
+const PARAMS_BYTES: usize = 192
 
 /// Bytes of `shaders/common.wgsl`'s `Globals`.
 const GLOBALS_BYTES: usize = 64
@@ -274,6 +287,8 @@ struct Layered {
   overlay: RenderPipeline,
   /// Blends a plain layer onto a layer texture.
   blit: RenderPipeline,
+  /// The passes of `shaders/blur.wgsl`.
+  blur: RenderPipeline,
 }
 
 /// [`Layered`] being made.
@@ -283,6 +298,7 @@ struct MakingLayered {
   copy: Making,
   overlay: Making,
   blit: Making,
+  blur: Making,
 }
 
 /// The renderer's pipelines, made the first time a frame needs them.
@@ -507,6 +523,65 @@ fn intersect(a: &Area, b: &Area) -> Area {
   return Area { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
 }
 
+/// How far a blur of standard deviation `sigma` reaches: vector.filter's three box passes reach
+/// under 3 sigma, its kernel for small sigmas 3 sigma.
+fn blurReach(sigma: f32) -> u32 {
+  return f32.toU32(f32.ceil(sigma * 3.0)) + 8
+}
+
+/// `area` grown by `by` on every side, inside the target.
+fn grown(area: &Area, by: u32, width: u32, height: u32) -> Area {
+  let x0 = if area.x > by { area.x - by } else { 0 }
+  let y0 = if area.y > by { area.y - by } else { 0 }
+  let x1 = smaller(area.x + area.width + by, width)
+  let y1 = smaller(area.y + area.height + by, height)
+  return Area { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+}
+
+/// Where the pool textures of one slow composite lie in the scene.
+struct Regions {
+  /// The layer's content, its mask and their filtered copies: where it lands and, transformed,
+  /// its untransformed source.
+  content: Area,
+  /// The copy of what is under the layer, and its blur: where it lands, grown by the blur's
+  /// reach for a backdrop blur, since the blur reads nothing further.
+  backdrop: Area,
+}
+
+impl Copy for Regions {}
+
+/// The regions of a slow composite of `sprite` over `area`, inside `within`, the pixels of the
+/// surface it lands on.
+fn regionsOf(sprite: &LayerSprite, area: &Area, within: &Area, width: u32, height: u32) -> Regions {
+  let content = intersect(&spanning(area, &contentOf(sprite, area, width, height)), within)
+  let backdrop = if sprite.effects.backdropBlur > 0.0 {
+    intersect(&grown(area, blurReach(sprite.effects.backdropBlur), width, height), within)
+  } else {
+    intersect(area, within)
+  }
+  return Regions { content: content, backdrop: backdrop }
+}
+
+/// Regions for a pass over the whole target, whose textures all lie at the origin.
+fn wholeRegions(width: u32, height: u32) -> Regions {
+  let all = Area { x: 0, y: 0, width: width, height: height }
+  return Regions { content: all, backdrop: all }
+}
+
+/// `area` cut to `width` x `height` from its origin.
+fn fitted(area: Area, width: u32, height: u32) -> Area {
+  return Area { x: area.x, y: area.y, width: smaller(area.width, width), height: smaller(area.height, height) }
+}
+
+/// `area` in the pixels of a texture whose pixel (0, 0) is `origin`'s; `area` lies inside it.
+fn localTo(area: &Area, origin: &Area) -> Area {
+  let inside = intersect(area, origin)
+  if inside.width == 0 {
+    return inside
+  }
+  return Area { x: inside.x - origin.x, y: inside.y - origin.y, width: inside.width, height: inside.height }
+}
+
 /// The pixels of its texture a layer's content takes: where it lands, or for a transformed layer
 /// its untransformed `source`.
 fn contentOf(sprite: &LayerSprite, area: &Area, width: u32, height: u32) -> Area {
@@ -539,6 +614,70 @@ fn plain(sprite: &LayerSprite) -> bool {
     && !effects.hasShadow()
 }
 
+/// Whether `sprite` can be drawn straight onto its parent's surface (see
+/// `UiRenderer.planInline`).
+fn inlines(scene: &Scene, sprite: &LayerSprite) -> bool {
+  let m = sprite.transform.values
+  let det = m[0] * m[4] - m[3] * m[1]
+  let held = scene.quads(sprite.layer).length + scene.shadows(sprite.layer).length
+    + scene.underlines(sprite.layer).length + scene.glyphs(sprite.layer).length
+    + scene.images(sprite.layer).length
+  // One primitive fades as the layer would; several would show through each other.
+  return m[2] == 0.0 && m[5] == 0.0 && m[8] == 1.0
+    && f32.abs(det) > 0.000001
+    && plain(sprite) && (sprite.isolation.opacity >= 1.0 || held == 1)
+    && scene.maskOf(sprite.layer) == NO_MASK
+    && scene.layers(sprite.layer).length == 0
+    && scene.paths(sprite.layer).length == 0
+}
+
+/// How many primitives the shaders can draw through a transform `layer` holds itself.
+fn heldBy(scene: &Scene, layer: u32) -> usize {
+  return scene.quads(layer).length + scene.shadows(layer).length + scene.underlines(layer).length
+    + scene.glyphs(layer).length + scene.images(layer).length
+}
+
+/// Whether `sprite` is an affine layer that only wraps the plain layer `inner`, as a box that is
+/// both moved by a transform and faded paints: a transform layer around an opacity layer. The
+/// two are then drawn inline as one (see `UiRenderer.planInline`), with both opacities.
+fn wraps(scene: &Scene, sprite: &LayerSprite, inner: &LayerSprite) -> bool {
+  let m = sprite.transform.values
+  let det = m[0] * m[4] - m[3] * m[1]
+  let held = heldBy(scene, inner.layer)
+  let opaque = sprite.isolation.opacity >= 1.0 && inner.isolation.opacity >= 1.0
+  return m[2] == 0.0 && m[5] == 0.0 && m[8] == 1.0 && f32.abs(det) > 0.000001
+    && plain(sprite) && scene.maskOf(sprite.layer) == NO_MASK
+    && heldBy(scene, sprite.layer) == 0 && scene.paths(sprite.layer).length == 0
+    && !inner.transformed() && plain(inner) && scene.maskOf(inner.layer) == NO_MASK
+    && !inner.clip.isRounded()
+    && scene.layers(inner.layer).length == 0 && scene.paths(inner.layer).length == 0
+    && (opaque || held == 1)
+}
+
+/// Whether the slow composite of `sprite`, or of a layer inside it, filters through the pool's
+/// scratch textures: a layer blur, a color filter, a drop shadow, a mask, or a backdrop blur too
+/// narrow for the blur pyramid. A wide backdrop blur alone needs none of them.
+fn scratches(scene: &Scene, sprite: &LayerSprite) -> bool {
+  let effects = sprite.effects
+  if effects.blur > 0.0 || effects.hasColor() || effects.hasShadow()
+    || effects.backdropBlur > 0.0 && effects.backdropBlur < FAST_SIGMA {
+    return true
+  }
+  let mask = scene.maskOf(sprite.layer)
+  if mask != NO_MASK {
+    return true
+  }
+  let inside = scene.layers(sprite.layer)
+  let mut i: usize = 0
+  while i < inside.length {
+    if scratches(scene, &inside[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}
+
 /// Whether `layer` holds a layer that blurs what is under it, which reads its whole texture.
 fn blursBackdrop(scene: &Scene, layer: u32) -> bool {
   let sprites = scene.layers(layer)
@@ -569,13 +708,31 @@ impl Copy for Planned {}
 union Surface {
   /// The frame's target.
   Target,
-  /// `UiRenderer.pages[index]`.
+  /// Page `index` of the frame, drawn in `UiRenderer.pages[pageTextures[index]]`.
   Page { index: usize },
   /// `UiRenderer.layers[index]`.
   Pool { index: usize },
 }
 
 impl Copy for Surface {}
+
+/// Which pipelines draw onto `surface`, for a [`Draws`] key.
+fn setOf(surface: Surface) -> u32 {
+  return match surface {
+    Surface.Target => SET_TARGET
+    _ => SET_OFFSCREEN
+  }
+}
+
+/// Where a composite reads the blurred backdrop.
+union Backdrop {
+  /// `UiRenderer.layers[index]`, at the backdrop copy's size.
+  Pool { index: usize },
+  /// An image of `UiRenderer.pyramid`, to scale back up.
+  Pyramid { blurred: Blurred },
+}
+
+impl Copy for Backdrop {}
 
 effect fn beginPass<'e>(
   encoder: &'e mut CommandEncoder,
@@ -609,9 +766,33 @@ pub struct UiRenderer {
   buffers: List<Buffer>,
   /// One 128-byte uniform per composite or copy pass of a frame.
   params: List<Buffer>,
-  /// 0 is the backdrop copy, 1 + d the target of nesting depth d.
+  /// 0 is the backdrop copy, 1 + d the target of nesting depth d. Each composite places them
+  /// over its own pixels (see `regionsOf`), so they are only as large as the largest composite,
+  /// except 1, the root, which is target-sized when the root holds a slow layer.
   layers: List<FilterImage>,
+  /// The size the pool textures other than the root need this frame (see `plan`).
+  poolWidth: u32,
+  poolHeight: u32,
+  /// The size the textures that hold a composite's content (2 and up) need this frame: the
+  /// largest content region, which a backdrop blur's reach does not grow.
+  contentWidth: u32,
+  contentHeight: u32,
+  /// Frames since the pool was last sized down to what its frames need, and the largest of
+  /// each need over them: the pool's size, its content textures' size, and whether a frame
+  /// used the scratch textures.
+  poolSlack: u32,
+  recentWidth: u32,
+  recentHeight: u32,
+  recentHoldWidth: u32,
+  recentHoldHeight: u32,
+  recentScratch: bool,
+  /// The globals uniform of each slow layer's content of a frame, whose `origin` is the content's.
+  regionGlobals: List<Buffer>,
+  /// How many of `regionGlobals` this frame has used.
+  regionCount: usize,
   filters: List<FilterRenderer>,
+  /// The halved images of this frame's wide blurs (see `blur`).
+  pyramid: BlurPyramid,
   layerWidth: u32,
   layerHeight: u32,
   /// The textures plain layers share (see `plan`). A page covers only the pixels its layers
@@ -628,9 +809,10 @@ pub struct UiRenderer {
   pageDepths: List<u32>,
   /// What the layers of each page of this frame claim, together (see `pageFor`).
   pageBounds: List<Area>,
-  /// For each page, how many frames in a row its texture has been more than four times larger
-  /// than it needs; past [`SHRINK_FRAMES`] it gets a smaller one.
-  pageSlack: List<u32>,
+  /// For each texture in `pages`, how many frames in a row no page has used it.
+  pageIdle: List<u32>,
+  /// The index in `pages` of each page's texture this frame.
+  pageTextures: List<u32>,
   /// The plain layers of this frame.
   plans: List<Planned>,
   /// For each layer of the scene: its index in `plans`, [`NOT_PLANNED`] or [`PLANNED_EMPTY`].
@@ -639,6 +821,23 @@ pub struct UiRenderer {
   rootSlow: bool,
   /// Whether any layer is composited the slow way.
   anySlow: bool,
+  /// Whether this frame draws the root straight onto the target and reads what is under a slow
+  /// layer back from it (see [`UiRenderer.drawReadable`]), instead of drawing the frame into a
+  /// texture of its own first.
+  readsTarget: bool,
+  /// Whether a slow composite of this frame blurs its backdrop too narrowly for the pyramid.
+  narrow: bool,
+  /// The copy of what is under a slow layer on the target, in the target's format, when
+  /// `readsTarget`: one texture, as large as the backdrop copy of the pool.
+  under: List<FilterImage>,
+  /// Whether a slow composite of this frame filters through the pool's three scratch textures
+  /// (see `scratches`); they stay one pixel large until one does.
+  scratch: bool,
+  /// For each layer of the scene: the `Transform` it is drawn through straight onto its
+  /// parent's surface, or 0 for a layer that is drawn into a texture (see `planInline`).
+  inline: List<u32>,
+  /// The `Transform`s of `shaders/common.wgsl` of this frame; the first is unused.
+  transforms: List<u8>,
   /// Scroll positions newer than a scene's own (see [`UiRenderer.setScrolls`]).
   newer: List<ScrollPosition>,
   /// The scroll groups of the scene drawn last, placed.
@@ -659,6 +858,7 @@ impl UiRenderer {
       path: run gpu.createShaderModule(device, b"ui path", shaders.path()),
     }
     let layer = run gpu.createShaderModule(device, b"ui layer", shaders.layer())
+    let blur = run gpu.createShaderModule(device, b"ui blur", shaders.blur())
     // Natively all of them compile at once on Dawn's worker threads, the ones a plain frame
     // draws with first; nothing waits for them here (see `Making`).
     let direct = run startPipelines(device, &modules, format)
@@ -668,6 +868,7 @@ impl UiRenderer {
       copy: run startPipeline(device, &layer, format, false),
       overlay: run startPipeline(device, &layer, format, true),
       blit: run startPipeline(device, &layer, LAYER_FORMAT, true),
+      blur: run startPipeline(device, &blur, LAYER_FORMAT, false),
     }
     return UiRenderer {
       format: format,
@@ -678,7 +879,20 @@ impl UiRenderer {
       buffers: List<Buffer>.make(),
       params: List<Buffer>.make(),
       layers: List<FilterImage>.make(),
+      poolWidth: 0,
+      poolHeight: 0,
+      contentWidth: 0,
+      contentHeight: 0,
+      poolSlack: 0,
+      recentWidth: 0,
+      recentHeight: 0,
+      recentHoldWidth: 0,
+      recentHoldHeight: 0,
+      recentScratch: false,
+      regionGlobals: List<Buffer>.make(),
+      regionCount: 0,
       filters: List<FilterRenderer>.make(),
+      pyramid: BlurPyramid.make(),
       layerWidth: 0,
       layerHeight: 0,
       pages: List<FilterImage>.make(),
@@ -687,11 +901,18 @@ impl UiRenderer {
       fullPages: 0,
       pageDepths: List<u32>.make(),
       pageBounds: List<Area>.make(),
-      pageSlack: List<u32>.make(),
+      pageIdle: List<u32>.make(),
+      pageTextures: List<u32>.make(),
       plans: List<Planned>.make(),
       assigned: List<u32>.make(),
       rootSlow: false,
       anySlow: false,
+      readsTarget: false,
+      narrow: false,
+      under: List<FilterImage>.make(),
+      scratch: false,
+      inline: List<u32>.make(),
+      transforms: List<u8>.make(),
       newer: List<ScrollPosition>.make(),
       placed: Placements.make(),
     }
@@ -724,6 +945,7 @@ impl UiRenderer {
             copy: run finishPipeline(move making.copy),
             overlay: run finishPipeline(move making.overlay),
             blit: run finishPipeline(move making.blit),
+            blur: run finishPipeline(move making.blur),
           },
         }
       }
@@ -739,6 +961,27 @@ impl UiRenderer {
     ? &mut Allocator {
     self.newer.clear()
     run self.newer.appendSlice(positions)
+  }
+
+  /// The bytes of the textures the renderer holds for layers: the composite pool, the pages
+  /// and the blur pyramid, then how many pool textures and pages those are. A texture the GPU
+  /// has not drawn into yet may take no memory.
+  pub fn textureBytes(self: &Self) -> [u64; 5] {
+    let mut pool: u64 = 0
+    let layers = self.layers.asSlice()
+    let mut i: usize = 0
+    while i < layers.length {
+      pool = pool + u32.toU64(layers[i].width) * u32.toU64(layers[i].height) * 4
+      i = i + 1
+    }
+    let mut paged: u64 = 0
+    let pages = self.pages.asSlice()
+    i = 0
+    while i < pages.length {
+      paged = paged + u32.toU64(pages[i].width) * u32.toU64(pages[i].height) * 4
+      i = i + 1
+    }
+    return [pool, paged, self.pyramid.bytes(), usize.toU64(layers.length), usize.toU64(pages.length)]
   }
 
   /// The target format.
@@ -803,7 +1046,6 @@ impl UiRenderer {
         device,
         &mut encoder,
         target,
-        readyOf(&self.direct),
         scene,
         atlas,
         0,
@@ -817,7 +1059,8 @@ impl UiRenderer {
       run self.plan(scene, width, height)
       run self.reserve(device, queue, scene, width, height)
       let mut slot: usize = 0
-      run self.fillPages(device, queue, &mut encoder, scene, atlas, target, width, height, &mut slot)
+      let mut draws = Draws.make()
+      run self.fillPages(device, queue, &mut encoder, scene, atlas, target, width, height, &mut slot, &mut draws)
       if !self.rootSlow {
         run self.fill(
           device,
@@ -826,6 +1069,7 @@ impl UiRenderer {
           scene,
           atlas,
           target,
+          Option<&'static Texture>.None,
           Surface.Target,
           NO_PAGE,
           true,
@@ -833,6 +1077,7 @@ impl UiRenderer {
           width,
           height,
           &mut slot,
+          &mut draws,
         )
         let finished = run encoder.finish(b"ui overlay")
         queue.submit(&[finished.reference()])
@@ -845,6 +1090,7 @@ impl UiRenderer {
         scene,
         atlas,
         target,
+        Option<&'static Texture>.None,
         Surface.Pool { index: 1 },
         NO_PAGE,
         false,
@@ -852,6 +1098,7 @@ impl UiRenderer {
         width,
         height,
         &mut slot,
+        &mut draws,
       )
       run self.pass(
         device,
@@ -859,15 +1106,18 @@ impl UiRenderer {
         &mut encoder,
         &readyOf(&self.layered).overlay,
         target,
+        false,
         slot,
         OP_COPY,
         0,
         255,
         1,
-        0,
+        Backdrop.Pool { index: 0 },
         LayerEffects.none(),
         Mapping.none(),
         Area { x: 0, y: 0, width: width, height: height },
+        Area { x: 0, y: 0, width: width, height: height },
+        wholeRegions(width, height),
       )
     }
     let finished = run encoder.finish(b"ui overlay")
@@ -911,7 +1161,6 @@ impl UiRenderer {
       device,
       &mut encoder,
       target,
-      readyOf(&self.direct),
       scene,
       atlas,
       0,
@@ -941,6 +1190,48 @@ impl UiRenderer {
   ) -> ()
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
+    run self.encodeOnto(device, queue, &mut encoder, scene, atlas, target, Option<&'static Texture>.None, width, height, clear)
+  }
+
+  /// [`UiRenderer.draw`] onto a target that can be read back: `texture`, whose view is `target`,
+  /// has `CopySrc` usage. A frame whose root holds a layer composited the slow way is then
+  /// drawn straight onto it, and what is under such a layer is copied from it, where `draw`
+  /// keeps a texture as large as the target for the frame and copies that out at the end.
+  pub effect fn drawReadable(
+    self: &mut Self,
+    device: &Device,
+    queue: &Queue,
+    scene: &Scene,
+    atlas: &GpuAtlas,
+    texture: &Texture,
+    target: &TextureView,
+    width: u32,
+    height: u32,
+    clear: Rgba<f32>,
+  ) -> ()
+    ! GpuError | OutOfMemoryError
+    ? &mut Allocator {
+    let mut encoder = run gpu.createCommandEncoder(device, b"ui frame")
+    run self.encodeOnto(device, queue, &mut encoder, scene, atlas, target, Option.some(texture), width, height, clear)
+    let finished = run encoder.finish(b"ui frame")
+    queue.submit(&[finished.reference()])
+  }
+
+  effect fn encodeOnto(
+    self: &mut Self,
+    device: &Device,
+    queue: &Queue,
+    encoder: &mut CommandEncoder,
+    scene: &Scene,
+    atlas: &GpuAtlas,
+    target: &TextureView,
+    reads: Option<&Texture>,
+    width: u32,
+    height: u32,
+    clear: Rgba<f32>,
+  ) -> ()
+    ! GpuError | OutOfMemoryError
+    ? &mut Allocator {
     if width == 0 || height == 0 {
       return
     }
@@ -956,7 +1247,6 @@ impl UiRenderer {
         device,
         &mut encoder,
         target,
-        readyOf(&self.direct),
         scene,
         atlas,
         0,
@@ -969,10 +1259,13 @@ impl UiRenderer {
     }
     run self.readyAll()
     run self.plan(scene, width, height)
+    // A narrow backdrop blur filters the pool's own copy, so its frame keeps a texture.
+    self.readsTarget = reads.isSome() && self.rootSlow && !self.narrow
     run self.reserve(device, queue, scene, width, height)
     let mut slot: usize = 0
-    run self.fillPages(device, queue, &mut encoder, scene, atlas, target, width, height, &mut slot)
-    if !self.rootSlow {
+    let mut draws = Draws.make()
+    run self.fillPages(device, queue, &mut encoder, scene, atlas, target, width, height, &mut slot, &mut draws)
+    if !self.rootSlow || self.readsTarget {
       run self.fill(
         device,
         queue,
@@ -980,6 +1273,7 @@ impl UiRenderer {
         scene,
         atlas,
         target,
+        reads,
         Surface.Target,
         NO_PAGE,
         false,
@@ -987,6 +1281,7 @@ impl UiRenderer {
         width,
         height,
         &mut slot,
+        &mut draws,
       )
       return
     }
@@ -997,6 +1292,7 @@ impl UiRenderer {
       scene,
       atlas,
       target,
+      Option<&'static Texture>.None,
       Surface.Pool { index: 1 },
       NO_PAGE,
       false,
@@ -1004,6 +1300,7 @@ impl UiRenderer {
       width,
       height,
       &mut slot,
+      &mut draws,
     )
     run self.pass(
       device,
@@ -1011,15 +1308,18 @@ impl UiRenderer {
       &mut encoder,
       &readyOf(&self.layered).copy,
       target,
+      false,
       slot,
       OP_COPY,
       0,
       255,
       1,
-      0,
+      Backdrop.Pool { index: 0 },
       LayerEffects.none(),
       Mapping.none(),
       Area { x: 0, y: 0, width: width, height: height },
+      Area { x: 0, y: 0, width: width, height: height },
+      wholeRegions(width, height),
     )
   }
 
@@ -1034,7 +1334,8 @@ impl UiRenderer {
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
     run self.placed.resolve(scene.scrollGroups(), scene.scrolls(), self.newer.asSlice())
-    run self.instances.pack(scene, &self.placed)
+    run self.planInline(scene)
+    run self.instances.pack(scene, &self.placed, self.inline.asSlice())
     let mut globals: [u8; 64] = [0; 64]
     writeU32(&mut globals, 0, f32.toBits(u32.toF32(width)))
     writeU32(&mut globals, 4, f32.toBits(u32.toF32(height)))
@@ -1146,6 +1447,90 @@ impl UiRenderer {
       16,
       storage,
     )
+    run uploadList(
+      device,
+      queue,
+      &mut self.buffers,
+      TRANSFORMS,
+      b"ui transforms",
+      &mut self.transforms,
+      TRANSFORM_BYTES,
+      storage,
+    )
+  }
+
+  /// Finds the layers of `scene` that are drawn straight onto their parent's surface, through
+  /// a `Transform`, and writes those. Such a layer costs no texture and no pass, and its
+  /// primitives join the frame's instanced draws: it is a layer that needs nothing of a texture
+  /// but an affine transform (no mask, blend or filter, and an opacity only when it holds one
+  /// primitive) and holds only primitives the shaders can transform, so no layer and no path.
+  /// An affine layer that only wraps one such untransformed layer is drawn inline with it.
+  effect fn planInline(self: &mut Self, scene: &Scene) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    self.inline.clear()
+    run self.inline.appendRepeated(0, u32.toUsize(scene.layerCount()))
+    self.transforms.clear()
+    run self.transforms.appendRepeated(0, TRANSFORM_BYTES)
+    let mut layer: u32 = 0
+    while layer < scene.layerCount() {
+      let sprites = scene.layers(layer)
+      let groups = scene.groupsOf(layer, PrimitiveKind.Layer)
+      let mut i: usize = 0
+      while i < sprites.length {
+        let sprite = self.placed.layer(sprites[i], groups[i])
+        // A layer drawn inline with the layer that wraps it has its transform already.
+        let taken = self.inlineOf(sprite.layer) != 0
+        let nested = scene.layers(sprite.layer)
+        let direct = !taken && inlines(scene, &sprite)
+        let mut wrapped = false
+        let mut opacity = sprite.isolation.opacity
+        if !taken && !direct && nested.length == 1 {
+          let inner = self.placed.layer(nested[0], scene.groupsOf(sprite.layer, PrimitiveKind.Layer)[0])
+          if wraps(scene, &sprite, &inner) {
+            wrapped = true
+            opacity = f32.max(f32.min(opacity, 1.0), 0.0) * inner.isolation.opacity
+          }
+        }
+        if direct || wrapped {
+          let index = usize.toU32(self.transforms.length() / TRANSFORM_BYTES)
+          let m = sprite.transform.values
+          let det = m[0] * m[4] - m[3] * m[1]
+          let c = sprite.clip
+          let words: [f32; 32] = [
+            m[0], m[3], m[6], 0.0,
+            m[1], m[4], m[7], 0.0,
+            m[4] / det, -m[3] / det, (m[3] * m[7] - m[4] * m[6]) / det, 0.0,
+            -m[1] / det, m[0] / det, (m[1] * m[6] - m[0] * m[7]) / det, 0.0,
+            c.bounds.xMin, c.bounds.yMin, c.bounds.xMax, c.bounds.yMax,
+            c.radii.topLeft, c.radii.topRight, c.radii.bottomRight, c.radii.bottomLeft,
+            f32.max(f32.min(opacity, 1.0), 0.0), 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0,
+          ]
+          let start = self.transforms.length()
+          run self.transforms.appendRepeated(0, TRANSFORM_BYTES)
+          let bytes = self.transforms.asMutSlice()
+          let mut w: usize = 0
+          while w < 32 {
+            writeU32(&mut bytes, start + w * 4, f32.toBits(words[w]))
+            w = w + 1
+          }
+          drop bytes
+          let inline = self.inline.asMutSlice()
+          inline[u32.toUsize(sprite.layer)] = index
+          if wrapped {
+            inline[u32.toUsize(nested[0].layer)] = index
+          }
+        }
+        i = i + 1
+      }
+      layer = layer + 1
+    }
+  }
+
+  /// The `Transform` layer `layer` is drawn through onto its parent's surface, or 0.
+  fn inlineOf(self: &Self, layer: u32) -> u32 {
+    return self.inline.get(u32.toUsize(layer))
   }
 
   /// Grows the pooled layer textures and pass uniforms to what `scene` needs.
@@ -1163,26 +1548,104 @@ impl UiRenderer {
       run self.filters.append(run FilterRenderer.make(device, queue))
     }
     self.filters.asMutSlice()[0].reset()
+    self.pyramid.begin()
     if width != self.layerWidth || height != self.layerHeight {
       self.layers.clear()
+      self.under.clear()
+      self.pyramid.clear()
       self.pages.clear()
+      self.pageIdle.clear()
       self.pageGlobals.clear()
       self.layerWidth = width
       self.layerHeight = height
     }
+    self.regionCount = 0
     if self.anySlow {
       let needed = u32.toUsize(depthOf(scene, 0)) + 5
-      while self.layers.length() < needed {
-        let layer = run FilterImage.make(device, width, height)
-        run self.layers.append(move layer)
+      let needWidth = larger(self.poolWidth, 1)
+      let needHeight = larger(self.poolHeight, 1)
+      // The backdrop copy (0) and the scratch textures hold a composite's backdrop, grown by a
+      // blur's reach; the textures between hold only its content.
+      let holdWidth = larger(self.contentWidth, 1)
+      let holdHeight = larger(self.contentHeight, 1)
+      // Every [`SHRINK_FRAMES`] frames, a texture half again as large as the largest those
+      // frames needed of it is made again at that size: a pool one busy screen grew does not
+      // stay that large under a quiet one.
+      self.recentWidth = larger(self.recentWidth, needWidth)
+      self.recentHeight = larger(self.recentHeight, needHeight)
+      self.recentHoldWidth = larger(self.recentHoldWidth, holdWidth)
+      self.recentHoldHeight = larger(self.recentHoldHeight, holdHeight)
+      self.recentScratch = self.recentScratch || self.scratch
+      self.poolSlack = self.poolSlack + 1
+      let shrink = self.poolSlack > SHRINK_FRAMES
+      // The scratch textures are the last three, however many a deeper frame left.
+      let count = larger(usize.toU32(needed), usize.toU32(self.layers.length()))
+      let mut k: usize = 0
+      while k < u32.toUsize(count) {
+        let root = k == 1 && self.rootSlow && !self.readsTarget
+        let last = k + 3 >= u32.toUsize(count)
+        let spare = !self.scratch && last
+        let holds = k != 0 && !last
+        let wantWidth = if root { width } else if spare { 1 } else if holds { holdWidth } else { needWidth }
+        let wantHeight = if root { height } else if spare { 1 } else if holds { holdHeight } else { needHeight }
+        if k < self.layers.length() {
+          let image = &self.layers.asSlice()[k]
+          let small = image.width < wantWidth || image.height < wantHeight
+          let fitWidth = if last && !self.recentScratch { 1 } else if holds { self.recentHoldWidth } else { self.recentWidth }
+          let fitHeight = if last && !self.recentScratch { 1 } else if holds { self.recentHoldHeight } else { self.recentHeight }
+          let loose = shrink && !root && !small
+            && u32.toU64(image.width) * u32.toU64(image.height) * 2 > u32.toU64(fitWidth) * u32.toU64(fitHeight) * 3
+          if small || loose {
+            let made = run FilterImage.make(
+              device,
+              if small { larger(image.width, wantWidth) } else { fitWidth },
+              if small { larger(image.height, wantHeight) } else { fitHeight },
+            )
+            let layers = self.layers.asMutSlice()
+            layers[k] = move made
+          }
+        } else {
+          let made = run FilterImage.make(device, wantWidth, wantHeight)
+          run self.layers.append(move made)
+        }
+        k = k + 1
+      }
+      if shrink {
+        self.poolSlack = 0
+        self.recentWidth = 0
+        self.recentHeight = 0
+        self.recentHoldWidth = 0
+        self.recentHoldHeight = 0
+        self.recentScratch = false
+      }
+    }
+    if self.readsTarget {
+      let image = &self.layers.asSlice()[0]
+      let wantWidth = image.width
+      let wantHeight = image.height
+      drop image
+      let fits = self.under.length() == 1 && self.under.asSlice()[0].width == wantWidth
+        && self.under.asSlice()[0].height == wantHeight
+      if !fits {
+        self.under.clear()
+        run self.under.append(run FilterImage.makeIn(device, wantWidth, wantHeight, self.format))
       }
     }
     run self.sizePages(device, queue, width, height)
-    // A frame that needed many pages does not keep them all.
-    while self.pages.length() > self.pageDepths.length() + 2 {
-      drop self.pages.pop()
+    // A layer drawn inline takes no pass of its own.
+    let mut inlined: usize = 0
+    let mut l: usize = 0
+    while l < self.inline.length() {
+      if self.inline.get(l) != 0 {
+        inlined = inlined + 1
+      }
+      l = l + 1
     }
-    let passes = compositesOf(scene, 0) + 1
+    let passes = compositesOf(scene, 0) + 1 - inlined
+    // A frame of far fewer passes than an earlier one gives the uniforms back.
+    if self.params.length() > passes * 2 + 64 {
+      self.params.truncate(passes + 32)
+    }
     let zeros: [u8; PARAMS_BYTES] = [0; PARAMS_BYTES]
     while self.params.length() < passes {
       let buffer = run storage(
@@ -1209,20 +1672,39 @@ impl UiRenderer {
     run self.assigned.appendRepeated(NOT_PLANNED, u32.toUsize(scene.layerCount()))
     self.rootSlow = false
     self.anySlow = false
+    self.narrow = false
+    self.scratch = false
     self.fullPages = 0
+    self.poolWidth = 0
+    self.poolHeight = 0
+    self.contentWidth = 0
+    self.contentHeight = 0
     run self.planLayer(scene, 0, 0, NO_PAGE, Area { x: 0, y: 0, width: width, height: height }, width, height)
   }
 
   /// Gives every page of this frame a texture and a place: the bounds of what its layers claim,
-  /// rounded up to [`PAGE_STEP`], or the whole target for a page in `fullPages`. A page keeps its
-  /// texture while it is large enough, unless it has been four times too large for
-  /// [`SHRINK_FRAMES`] frames.
+  /// rounded up to [`PAGE_STEP`], or the whole target for a page in `fullPages`. Pages take the
+  /// smallest free texture that fits, largest pages first, so textures serve whichever pages
+  /// fit them as layers move between pages; one more than twice too large is not used, and
+  /// a texture no page used for [`SHRINK_FRAMES`] frames is dropped.
   effect fn sizePages(self: &mut Self, device: &Device, queue: &Queue, width: u32, height: u32) -> ()
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
+    let count = self.pageDepths.length()
+    let mut t = self.pages.length()
+    while t > 0 {
+      t = t - 1
+      let idle = self.pageIdle.get(t)
+      if idle > SHRINK_FRAMES || idle > 0 && self.pages.length() > count {
+        drop self.pages.remove(t)
+        drop self.pageIdle.remove(t)
+      }
+    }
     self.pageAreas.clear()
+    self.pageTextures.clear()
+    let mut needs = List<Area>.make()
     let mut page: usize = 0
-    while page < self.pageDepths.length() {
+    while page < count {
       let full = self.fullPages & u32.shiftLeft(1, usize.toU32(page)) != 0
       let bounds = if full {
         Area { x: 0, y: 0, width: width, height: height }
@@ -1231,32 +1713,68 @@ impl UiRenderer {
       }
       let needWidth = if full { width } else { smaller(roundUp(larger(bounds.width, 1)), width) }
       let needHeight = if full { height } else { smaller(roundUp(larger(bounds.height, 1)), height) }
-      if page == self.pageSlack.length() {
-        run self.pageSlack.append(0)
-      }
-      if page < self.pages.length() {
-        let image = &self.pages.asSlice()[page]
-        let large = image.width >= needWidth && image.height >= needHeight
-          && (!full || image.width == width && image.height == height)
-        let oversized = u32.toU64(image.width) * u32.toU64(image.height)
-          > 4 * u32.toU64(needWidth) * u32.toU64(needHeight)
-        let slack = self.pageSlack.asMutSlice()
-        slack[page] = if large && oversized { slack[page] + 1 } else { 0 }
-        let replace = !large || slack[page] > SHRINK_FRAMES
-        drop slack
-        if replace {
-          let slack = self.pageSlack.asMutSlice()
-          slack[page] = 0
-          drop slack
-          let made = run FilterImage.make(device, needWidth, needHeight)
-          let pages = self.pages.asMutSlice()
-          pages[page] = move made
+      run needs.append(Area { x: bounds.x, y: bounds.y, width: needWidth, height: needHeight })
+      run self.pageTextures.append(NO_PAGE)
+      page = page + 1
+    }
+    let mut used = List<bool>.make()
+    run used.appendRepeated(false, self.pages.length())
+    let mut placed: usize = 0
+    while placed < count {
+      // The largest page not given a texture yet.
+      let mut pick: usize = 0
+      let mut pickSize: u64 = 0
+      let mut first = true
+      page = 0
+      while page < count {
+        if self.pageTextures.get(page) == NO_PAGE {
+          let size = sizeOf(&needs.get(page))
+          if first || size > pickSize {
+            pick = page
+            pickSize = size
+            first = false
+          }
         }
-      } else {
-        let made = run FilterImage.make(device, needWidth, needHeight)
-        run self.pages.append(move made)
+        page = page + 1
       }
-      let image = &self.pages.asSlice()[page]
+      let need = needs.get(pick)
+      let full = self.fullPages & u32.shiftLeft(1, usize.toU32(pick)) != 0
+      let mut best = NO_PAGE
+      let mut bestSize: u64 = 0
+      let mut k: usize = 0
+      while k < self.pages.length() {
+        let image = &self.pages.asSlice()[k]
+        let size = u32.toU64(image.width) * u32.toU64(image.height)
+        let fits = !used.get(k) && image.width >= need.width && image.height >= need.height
+          && size <= 2 * sizeOf(&need)
+          && (!full || image.width == width && image.height == height)
+        if fits && (best == NO_PAGE || size < bestSize) {
+          best = usize.toU32(k)
+          bestSize = size
+        }
+        k = k + 1
+      }
+      if best == NO_PAGE {
+        let made = run FilterImage.make(device, need.width, need.height)
+        run self.pages.append(move made)
+        run self.pageIdle.append(0)
+        run used.append(false)
+        best = usize.toU32(self.pages.length() - 1)
+      }
+      used.set(u32.toUsize(best), true)
+      self.pageTextures.set(pick, best)
+      placed = placed + 1
+    }
+    t = 0
+    while t < self.pages.length() {
+      let idle = if used.get(t) { 0 } else { self.pageIdle.get(t) + 1 }
+      self.pageIdle.set(t, idle)
+      t = t + 1
+    }
+    page = 0
+    while page < count {
+      let bounds = needs.get(page)
+      let image = &self.pages.asSlice()[u32.toUsize(self.pageTextures.get(page))]
       // The texture lies over the bounds and inside the target.
       let area = Area {
         x: smaller(bounds.x, width - image.width),
@@ -1264,6 +1782,7 @@ impl UiRenderer {
         width: image.width,
         height: image.height,
       }
+      drop image
       run self.pageAreas.append(area)
       if page == self.pageGlobals.length() {
         let zeros: [u8; GLOBALS_BYTES] = [0; GLOBALS_BYTES]
@@ -1328,7 +1847,7 @@ impl UiRenderer {
     while i < sprites.length {
       let sprite = self.placed.layer(sprites[i], groups[i])
       let area = intersect(&areaOf(&sprite, width, height), &within)
-      if area.width > 0 {
+      if area.width > 0 && self.inlineOf(sprite.layer) == 0 {
         let mut planned = false
         if plain(&sprite) {
           let rect = contentOf(&sprite, &area, width, height)
@@ -1387,12 +1906,23 @@ impl UiRenderer {
         }
         if !planned {
           self.anySlow = true
+          if !self.scratch {
+            self.scratch = scratches(scene, &sprite)
+          }
+          if sprite.effects.backdropBlur > 0.0 && sprite.effects.backdropBlur < FAST_SIGMA {
+            self.narrow = true
+          }
           if layer == 0 {
             self.rootSlow = true
           }
-          if onPage != NO_PAGE {
-            self.fullPages = self.fullPages | u32.shiftLeft(1, onPage)
-          }
+          // Its page is placed later, inside the target; what it holds inside the slow layer
+          // fits the slow layer's own regions.
+          let all = Area { x: 0, y: 0, width: width, height: height }
+          let regions = regionsOf(&sprite, &area, &all, width, height)
+          self.poolWidth = larger(self.poolWidth, larger(regions.content.width, regions.backdrop.width))
+          self.poolHeight = larger(self.poolHeight, larger(regions.content.height, regions.backdrop.height))
+          self.contentWidth = larger(self.contentWidth, regions.content.width)
+          self.contentHeight = larger(self.contentHeight, regions.content.height)
         }
       }
       i = i + 1
@@ -1451,7 +1981,7 @@ impl UiRenderer {
   fn viewOf<'a>(self: &'a Self, surface: Surface, target: &'a TextureView) -> &'a TextureView {
     return match surface {
       Surface.Target => target
-      Surface.Page { index } => &self.pages.asSlice()[index].view
+      Surface.Page { index } => &self.pages.asSlice()[u32.toUsize(self.pageTextures.get(index))].view
       Surface.Pool { index } => &self.layers.asSlice()[index].view
     }
   }
@@ -1459,7 +1989,7 @@ impl UiRenderer {
   /// The texture of `surface`, which is not the target.
   fn imageOf(self: &Self, surface: Surface) -> &FilterImage {
     return match surface {
-      Surface.Page { index } => &self.pages.asSlice()[index]
+      Surface.Page { index } => &self.pages.asSlice()[u32.toUsize(self.pageTextures.get(index))]
       Surface.Pool { index } => &self.layers.asSlice()[index]
       Surface.Target => Intrinsic.trap("ui_renderer: the target cannot be read back")
     }
@@ -1485,6 +2015,7 @@ impl UiRenderer {
     width: u32,
     height: u32,
     slot: &mut usize,
+    draws: &mut Draws,
   ) -> ()
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
@@ -1505,6 +2036,7 @@ impl UiRenderer {
             scene,
             atlas,
             target,
+            Option<&'static Texture>.None,
             Surface.Page { index: page },
             usize.toU32(page),
             false,
@@ -1512,6 +2044,7 @@ impl UiRenderer {
             width,
             height,
             &mut slot,
+            &mut draws,
           )
         }
         page = page + 1
@@ -1531,6 +2064,9 @@ impl UiRenderer {
     scene: &Scene,
     atlas: &GpuAtlas,
     target: &TextureView,
+    /// The target's texture when it can be read back and `surface` is the target (see
+    /// [`UiRenderer.drawReadable`]).
+    reads: Option<&Texture>,
     surface: Surface,
     page: u32,
     load: bool,
@@ -1538,11 +2074,18 @@ impl UiRenderer {
     width: u32,
     height: u32,
     slot: &mut usize,
+    draws: &mut Draws,
   ) -> ()
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
     let origin = self.originOf(surface)
+    let set = setOf(surface)
+    let globalsId = match surface {
+      Surface.Page { index } => usize.toU32(index) + 1
+      _ => 0
+    }
     let mut pass = run beginPass(&mut encoder, self.viewOf(surface, target), load, clear)
+    draws.begin()
     let count = if page == NO_PAGE {
       1
     } else {
@@ -1558,6 +2101,7 @@ impl UiRenderer {
       }
       if item.page == page {
         let rect = item.rect
+        draws.flush(&mut pass)
         scissor(&mut pass, &rect, &origin)
         let batches = scene.batches(item.layer)
         let mut from: usize = 0
@@ -1574,11 +2118,14 @@ impl UiRenderer {
               &mut pass,
               self.globalsOf(surface),
               self.pipelinesOf(surface),
+              set,
+              globalsId,
               scene,
               atlas,
               item.layer,
               from,
               b,
+              &mut draws,
             )
             let sprites = scene.layers(item.layer)
             let groups = scene.groupsOf(item.layer, PrimitiveKind.Layer)
@@ -1587,7 +2134,22 @@ impl UiRenderer {
               let sprite = self.placed.layer(sprites[i], groups[i])
               let area = intersect(&areaOf(&sprite, width, height), &rect)
               let plan = self.assigned.get(u32.toUsize(sprite.layer))
-              if area.width > 0 && plan != PLANNED_EMPTY {
+              if area.width > 0 && self.inlineOf(sprite.layer) != 0 {
+                // Its primitives are drawn here, through its transform, like the parent's own.
+                run self.drawInline(
+                  device,
+                  &mut pass,
+                  self.globalsOf(surface),
+                  self.pipelinesOf(surface),
+                  set,
+                  globalsId,
+                  scene,
+                  atlas,
+                  sprite.layer,
+                  &mut draws,
+                )
+              } else if area.width > 0 && plan != PLANNED_EMPTY {
+                draws.flush(&mut pass)
                 if plan != NOT_PLANNED {
                   scissor(&mut pass, &area, &origin)
                   run self.blit(
@@ -1610,14 +2172,20 @@ impl UiRenderer {
                     atlas,
                     sprite,
                     surface,
+                    Option.some(target),
+                    reads,
                     area,
+                    1,
+                    origin,
                     width,
                     height,
                     &mut slot,
+                    &mut draws,
                   )
                   pass = run beginPass(&mut encoder, self.viewOf(surface, target), true, clear)
                   scissor(&mut pass, &rect, &origin)
                 }
+                draws.begin()
                 slot.* = slot.* + 1
               }
               i = i + 1
@@ -1631,15 +2199,19 @@ impl UiRenderer {
           &mut pass,
           self.globalsOf(surface),
           self.pipelinesOf(surface),
+          set,
+          globalsId,
           scene,
           atlas,
           item.layer,
           from,
           batches.length,
+          &mut draws,
         )
       }
       k = k + 1
     }
+    draws.flush(&mut pass)
     pass.end()
   }
 
@@ -1682,9 +2254,9 @@ impl UiRenderer {
       _ => &readyOf(&self.layered).blit
     }
     let pages = self.pages.asSlice()
-    let content = &pages[u32.toUsize(plan.page)].view
+    let content = &pages[u32.toUsize(self.pageTextures.get(u32.toUsize(plan.page)))].view
     let mask = if plan.mask != NO_PAGE {
-      &pages[u32.toUsize(plan.mask)].view
+      &pages[u32.toUsize(self.pageTextures.get(u32.toUsize(plan.mask)))].view
     } else {
       content
     }
@@ -1705,7 +2277,8 @@ impl UiRenderer {
   }
 
   /// Composites `sprite` onto `surface`, within `area`, the slow way: its layer (and mask) into
-  /// pooled textures, then a blend pass that reads a copy of what is under it.
+  /// pooled textures of nesting `depth` (and one deeper), then a blend pass that reads a copy of
+  /// what is under it. `within` is where `surface` lies in the scene.
   effect fn slow(
     self: &mut Self,
     device: &Device,
@@ -1715,13 +2288,28 @@ impl UiRenderer {
     atlas: &GpuAtlas,
     sprite: LayerSprite,
     surface: Surface,
+    /// The target's view and, when it can be read back, its texture: for a `surface` that is
+    /// the target.
+    target: Option<&TextureView>,
+    reads: Option<&Texture>,
     area: Area,
+    depth: u32,
+    within: Area,
     width: u32,
     height: u32,
     slot: &mut usize,
+    draws: &mut Draws,
   ) -> ()
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
+    let mut regions = regionsOf(&sprite, &area, &within, width, height)
+    // Never past the pool's textures, should a frame need more than `plan` saw.
+    let held = &self.layers.asSlice()[u32.toUsize(depth) + 1]
+    regions.content = fitted(regions.content, held.width, held.height)
+    drop held
+    let poolWidth = self.layers.asSlice()[0].width
+    let poolHeight = self.layers.asSlice()[0].height
+    regions.backdrop = fitted(regions.backdrop, poolWidth, poolHeight)
     let transparent = clearOf(Rgba<f32>.new(0.0, 0.0, 0.0, 0.0))
     run self.isolated(
       device,
@@ -1730,72 +2318,115 @@ impl UiRenderer {
       scene,
       atlas,
       sprite.layer,
-      1,
+      depth,
+      regions.content,
       transparent,
       width,
       height,
       &mut slot,
+      &mut draws,
     )
     let mask = scene.maskOf(sprite.layer)
     if mask != NO_MASK {
-      run self.isolated(device, queue, &mut encoder, scene, atlas, mask, 2, transparent, width, height, &mut slot)
+      run self.isolated(
+        device,
+        queue,
+        &mut encoder,
+        scene,
+        atlas,
+        mask,
+        depth + 1,
+        regions.content,
+        transparent,
+        width,
+        height,
+        &mut slot,
+        &mut draws,
+      )
     }
 
     // The blend reads what is under the layer from a copy.
-    let whole = sprite.effects.backdropBlur > 0.0
-    let mut origin = Origin3D.default()
-    if !whole {
-      origin.setX(area.x)
-      origin.setY(area.y)
+    let from = localTo(&regions.backdrop, &within)
+    if from.width > 0 {
+      let mut origin = Origin3D.default()
+      origin.setX(from.x)
+      origin.setY(from.y)
+      match reads {
+        Option.Some { value } => {
+          // Straight from the target, into a copy of its own format.
+          let mut source = TexelCopyTextureInfo.default().withTexture(value)
+          source.setOrigin(origin)
+          let copy = TexelCopyTextureInfo.default().withTexture(&self.under.asSlice()[0].texture)
+          encoder.copyTextureToTexture(&source, &copy, &extent(from.width, from.height))
+        }
+        Option.None => {
+          let mut source = TexelCopyTextureInfo.default().withTexture(&self.imageOf(surface).texture)
+          source.setOrigin(origin)
+          let copy = TexelCopyTextureInfo.default().withTexture(&self.layers.asSlice()[0].texture)
+          encoder.copyTextureToTexture(&source, &copy, &extent(from.width, from.height))
+        }
+      }
     }
-    let mut source = TexelCopyTextureInfo.default().withTexture(&self.imageOf(surface).texture)
-    source.setOrigin(origin)
-    let mut copy = TexelCopyTextureInfo.default().withTexture(&self.layers.asSlice()[0].texture)
-    copy.setOrigin(origin)
-    encoder.copyTextureToTexture(
-      &source,
-      &copy,
-      &extent(
-        if whole {
-          width
-        } else {
-          area.width
-        },
-        if whole {
-          height
-        } else {
-          area.height
-        },
-      ),
+    let onTarget = reads.isSome()
+    let content = run self.filterLayer(
+      device,
+      queue,
+      &mut encoder,
+      sprite,
+      u32.toUsize(depth) + 1,
+      mask != NO_MASK,
+      &regions,
     )
-    drop source
-    drop copy
-    let content = run self.filterLayer(device, queue, &mut encoder, sprite, 2, mask != NO_MASK, width, height)
+    // A wide backdrop blur goes through the pyramid, which the composite scales back up.
+    let mut backdrop = Backdrop.Pool { index: 0 }
+    if sprite.effects.backdropBlur >= FAST_SIGMA {
+      backdrop = Backdrop.Pyramid {
+        blurred: run self.pyramid.blur(
+          device,
+          queue,
+          &mut encoder,
+          &readyOf(&self.layered).blur,
+          if onTarget { &self.under.asSlice()[0] } else { &self.layers.asSlice()[0] },
+          0,
+          0,
+          regions.backdrop.width,
+          regions.backdrop.height,
+          sprite.effects.backdropBlur,
+          true,
+        ),
+      }
+    } else if sprite.effects.backdropBlur > 0.0 {
+      backdrop = Backdrop.Pool { index: self.layers.length() - 2 }
+    }
     let opacity = f32.toU32(f32.max(f32.min(sprite.isolation.opacity, 1.0), 0.0) * 255.0 + 0.5)
     run self.pass(
       device,
       queue,
       &mut encoder,
-      &readyOf(&self.layered).composite,
-      &self.imageOf(surface).view,
+      // The target takes the layer shader for its own format; a layer texture the pool's.
+      if onTarget { &readyOf(&self.layered).copy } else { &readyOf(&self.layered).composite },
+      match target {
+        Option.Some { value } => if onTarget { value } else { &self.imageOf(surface).view }
+        Option.None => &self.imageOf(surface).view
+      },
+      onTarget,
       slot.*,
       OP_COMPOSITE,
       u8ToU32(sprite.isolation.blend),
       opacity,
       content,
-      if whole {
-        self.layers.length() - 2
-      } else {
-        0
-      },
+      backdrop,
       sprite.effects,
       Mapping.of(&sprite),
       area,
+      within,
+      regions,
     )
   }
 
-  /// Draws `layer` into the layer texture of nesting `depth`, cleared to `clear`, compositing the
-  /// isolated layers it holds as they come in its batches.
+  /// Draws `layer` into the layer texture of nesting `depth`, which lies over `region` of the
+  /// scene, cleared to `clear`, compositing the isolated layers it holds as they come in its
+  /// batches. One pass, which only those composites interrupt.
   effect fn isolated(
     self: &mut Self,
     device: &Device,
@@ -1805,17 +2436,32 @@ impl UiRenderer {
     atlas: &GpuAtlas,
     layer: u32,
     depth: u32,
+    region: Area,
     clear: ClearColor,
     width: u32,
     height: u32,
     slot: &mut usize,
+    draws: &mut Draws,
   ) -> ()
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
     let targetIndex = u32.toUsize(depth) + 1
+    let image = &self.layers.asSlice()[targetIndex]
+    let globals = self.globalsFor(Area { x: region.x, y: region.y, width: image.width, height: image.height })
+    drop image
+    if self.regionCount == self.regionGlobals.length() {
+      let zeros: [u8; GLOBALS_BYTES] = [0; GLOBALS_BYTES]
+      let buffer = run storage(device, queue, b"ui layer globals", &zeros, flags.WGPUBufferUsage_Uniform)
+      run self.regionGlobals.append(move buffer)
+    }
+    let own = self.regionCount
+    let globalsId = REGION_GLOBALS + usize.toU32(own)
+    self.regionCount = self.regionCount + 1
+    queue.writeBuffer(&self.regionGlobals.asSlice()[own], 0, &globals)
     let batches = scene.batches(layer)
+    let mut pass = run beginPass(&mut encoder, &self.layers.asSlice()[targetIndex].view, false, clear)
+    draws.begin()
     let mut from: usize = 0
-    let mut load = false
     let mut b: usize = 0
     while b < batches.length {
       let batch = batches[b]
@@ -1824,121 +2470,63 @@ impl UiRenderer {
         _ => false
       }
       if isLayer {
-        run self.drawRange(
+        run self.drawBatches(
           device,
-          &mut encoder,
-          &self.layers.asSlice()[targetIndex].view,
+          &mut pass,
+          &self.regionGlobals.asSlice()[own],
           &readyOf(&self.layered).offscreen,
+          SET_OFFSCREEN,
+          globalsId,
           scene,
           atlas,
           layer,
           from,
           b,
-          load,
-          clear,
+          &mut draws,
         )
-        load = true
         let sprites = scene.layers(layer)
         let groups = scene.groupsOf(layer, PrimitiveKind.Layer)
         let mut i = u32.toUsize(batch.start)
         while i < u32.toUsize(batch.end) {
           let sprite = self.placed.layer(sprites[i], groups[i])
-          let area = areaOf(&sprite, width, height)
-          if area.width > 0 {
-            let transparent = clearOf(Rgba<f32>.new(0.0, 0.0, 0.0, 0.0))
-            run self.isolated(
+          let area = intersect(&areaOf(&sprite, width, height), &region)
+          if area.width > 0 && self.inlineOf(sprite.layer) != 0 {
+            run self.drawInline(
+              device,
+              &mut pass,
+              &self.regionGlobals.asSlice()[own],
+              &readyOf(&self.layered).offscreen,
+              SET_OFFSCREEN,
+              globalsId,
+              scene,
+              atlas,
+              sprite.layer,
+              &mut draws,
+            )
+          } else if area.width > 0 {
+            draws.flush(&mut pass)
+            pass.end()
+            run self.slow(
               device,
               queue,
               &mut encoder,
               scene,
               atlas,
-              sprite.layer,
+              sprite,
+              Surface.Pool { index: targetIndex },
+              Option<&'static TextureView>.None,
+              Option<&'static Texture>.None,
+              area,
               depth + 1,
-              transparent,
+              region,
               width,
               height,
               &mut slot,
-            )
-            let mask = scene.maskOf(sprite.layer)
-            if mask != NO_MASK {
-              run self.isolated(
-                device,
-                queue,
-                &mut encoder,
-                scene,
-                atlas,
-                mask,
-                depth + 2,
-                transparent,
-                width,
-                height,
-                &mut slot,
-              )
-            }
-
-            // The blend reads what is under the layer from a copy.
-            let list = self.layers.asSlice()
-            let target = &list[targetIndex]
-            let mut origin = Origin3D.default()
-            if sprite.effects.backdropBlur == 0.0 {
-              origin.setX(area.x)
-              origin.setY(area.y)
-            }
-            let mut source = TexelCopyTextureInfo.default().withTexture(&target.texture)
-            source.setOrigin(origin)
-            let mut copy = TexelCopyTextureInfo.default().withTexture(&list[0].texture)
-            copy.setOrigin(origin)
-            encoder.copyTextureToTexture(
-              &source,
-              &copy,
-              &extent(
-                if sprite.effects.backdropBlur > 0.0 {
-                  width
-                } else {
-                  area.width
-                },
-                if sprite.effects.backdropBlur > 0.0 {
-                  height
-                } else {
-                  area.height
-                },
-              ),
-            )
-            drop list
-            let content = run self.filterLayer(
-              device,
-              queue,
-              &mut encoder,
-              sprite,
-              u32.toUsize(depth) + 2,
-              mask != NO_MASK,
-              width,
-              height,
-            )
-            let opacity = f32.toU32(
-              f32.max(f32.min(sprite.isolation.opacity, 1.0), 0.0) * 255.0 + 0.5,
-            )
-            run self.pass(
-              device,
-              queue,
-              &mut encoder,
-              &readyOf(&self.layered).composite,
-              &self.layers.asSlice()[targetIndex].view,
-              slot.*,
-              OP_COMPOSITE,
-              u8ToU32(sprite.isolation.blend),
-              opacity,
-              content,
-              if sprite.effects.backdropBlur > 0.0 {
-                self.layers.length() - 2
-              } else {
-                0
-              },
-              sprite.effects,
-              Mapping.of(&sprite),
-              move area,
+              &mut draws,
             )
             slot.* = slot.* + 1
+            pass = run beginPass(&mut encoder, &self.layers.asSlice()[targetIndex].view, true, clear)
+            draws.begin()
           }
           i = i + 1
         }
@@ -1946,21 +2534,22 @@ impl UiRenderer {
       }
       b = b + 1
     }
-    if !load || from < batches.length {
-      run self.drawRange(
-        device,
-        &mut encoder,
-        &self.layers.asSlice()[targetIndex].view,
-        &readyOf(&self.layered).offscreen,
-        scene,
-        atlas,
-        layer,
-        from,
-        batches.length,
-        load,
-        clear,
-      )
-    }
+    run self.drawBatches(
+      device,
+      &mut pass,
+      &self.regionGlobals.asSlice()[own],
+      &readyOf(&self.layered).offscreen,
+      SET_OFFSCREEN,
+      globalsId,
+      scene,
+      atlas,
+      layer,
+      from,
+      batches.length,
+      &mut draws,
+    )
+    draws.flush(&mut pass)
+    pass.end()
   }
 
   effect fn filterLayer(
@@ -1971,19 +2560,48 @@ impl UiRenderer {
     sprite: LayerSprite,
     source: usize,
     masked: bool,
-    width: u32,
-    height: u32,
+    regions: &Regions,
   ) -> usize
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
     let effects = sprite.effects
     let scratch = self.layers.length() - 3
-    let area = areaOf(&sprite, width, height)
-    let region = Region.make(area.x, area.y, area.x + area.width, area.y + area.height)
+    // The content textures lie over `regions.content`, the backdrop's over `regions.backdrop`.
+    let local = localTo(&areaOf(&sprite, self.layerWidth, self.layerHeight), &regions.content)
+    let region = Region.make(local.x, local.y, local.x + local.width, local.y + local.height)
     let images = self.layers.asSlice()
     let filter = &mut self.filters.asMutSlice()[0]
+    let pyramid = &mut self.pyramid
+    let pipeline = &readyOf(&self.layered).blur
     let mut content = source
-    if effects.blur > 0.0 {
+    if effects.blur >= FAST_SIGMA {
+      let blurred = run pyramid.blur(
+        device,
+        queue,
+        &mut encoder,
+        pipeline,
+        &images[source],
+        local.x,
+        local.y,
+        local.width,
+        local.height,
+        effects.blur,
+        false,
+      )
+      run pyramid.grow(
+        device,
+        queue,
+        &mut encoder,
+        pipeline,
+        &images[scratch],
+        blurred,
+        local.x,
+        local.y,
+        local.width,
+        local.height,
+      )
+      content = scratch
+    } else if effects.blur > 0.0 {
       let plan = run BlurPlan.make(f32.toF64(effects.blur))
       run filter.gaussianBlur(
         device,
@@ -2032,18 +2650,46 @@ impl UiRenderer {
         let a = free[0]
         let b = free[1]
         if effects.shadow.sigma > 0.0 {
-          let plan = run BlurPlan.make(f32.toF64(effects.shadow.sigma))
-          run filter.gaussianBlur(
-            device,
-            queue,
-            &mut encoder,
-            &images[a],
-            &images[content],
-            &images[free[2]],
-            &plan,
-            &plan,
-            region,
-          )
+          if effects.shadow.sigma >= FAST_SIGMA {
+            let blurred = run pyramid.blur(
+              device,
+              queue,
+              &mut encoder,
+              pipeline,
+              &images[content],
+              local.x,
+              local.y,
+              local.width,
+              local.height,
+              effects.shadow.sigma,
+              false,
+            )
+            run pyramid.grow(
+              device,
+              queue,
+              &mut encoder,
+              pipeline,
+              &images[a],
+              blurred,
+              local.x,
+              local.y,
+              local.width,
+              local.height,
+            )
+          } else {
+            let plan = run BlurPlan.make(f32.toF64(effects.shadow.sigma))
+            run filter.gaussianBlur(
+              device,
+              queue,
+              &mut encoder,
+              &images[a],
+              &images[content],
+              &images[free[2]],
+              &plan,
+              &plan,
+              region,
+            )
+          }
           run filter.colorMatrix(
             device,
             queue,
@@ -2093,13 +2739,14 @@ impl UiRenderer {
         )
         content = a
       }
-      // The backdrop blur below writes the last two pool textures.
-      if effects.backdropBlur > 0.0 && content != source && content != scratch {
+      // A narrow backdrop blur below writes the last two pool textures.
+      if effects.backdropBlur > 0.0 && effects.backdropBlur < FAST_SIGMA && content != source && content != scratch {
         run filter.copy(device, queue, &mut encoder, &images[source], &images[content], region)
         content = source
       }
     }
-    if effects.backdropBlur > 0.0 {
+    // `slow` blurs a wide backdrop blur itself, through the pyramid.
+    if effects.backdropBlur > 0.0 && effects.backdropBlur < FAST_SIGMA {
       let plan = run BlurPlan.make(f32.toF64(effects.backdropBlur))
       run filter.gaussianBlur(
         device,
@@ -2110,7 +2757,7 @@ impl UiRenderer {
         &images[scratch + 2],
         &plan,
         &plan,
-        Region.make(0, 0, width, height),
+        Region.make(0, 0, regions.backdrop.width, regions.backdrop.height),
       )
     }
     return content
@@ -2125,15 +2772,21 @@ impl UiRenderer {
     encoder: &mut CommandEncoder,
     pipeline: &RenderPipeline,
     output: &TextureView,
+    /// Whether what is under the layer was copied from the target (`under`), not into the pool.
+    onTarget: bool,
     slot: usize,
     op: u32,
     mode: u32,
     opacity: u32,
     content: usize,
-    backdropContent: usize,
+    backdrop: Backdrop,
     effects: LayerEffects,
     mapping: Mapping,
     area: Area,
+    /// Where `output` lies in the scene.
+    within: Area,
+    /// Where `content` and the backdrop textures lie.
+    regions: Regions,
   ) -> ()
     ! GpuError {
     let mut header: [u8; PARAMS_BYTES] = [0; PARAMS_BYTES]
@@ -2156,15 +2809,31 @@ impl UiRenderer {
     writeU32(&mut header, 32, f32.toBits(effects.radius))
     writeU32(&mut header, 36, effects.shape)
     writeMapping(&mut header, &mapping)
+    writeU32(&mut header, 160, within.x)
+    writeU32(&mut header, 164, within.y)
+    writeU32(&mut header, 168, regions.content.x)
+    writeU32(&mut header, 172, regions.content.y)
+    writeU32(&mut header, 176, regions.backdrop.x)
+    writeU32(&mut header, 180, regions.backdrop.y)
+    let list = self.layers.asSlice()
+    let copied = if onTarget { &self.under.asSlice()[0].view } else { &list[0].view }
+    let filtered = match backdrop {
+      Backdrop.Pool { index } => if onTarget && index == 0 { copied } else { &list[index].view }
+      Backdrop.Pyramid { blurred } => {
+        writeU32(&mut header, 124, blurred.scale)
+        writeU32(&mut header, 184, blurred.width)
+        writeU32(&mut header, 188, blurred.height)
+        self.pyramid.view(blurred)
+      }
+    }
     let params = &self.params.asSlice()[slot]
     queue.writeBuffer(params, 0, &header)
-    let list = self.layers.asSlice()
     let layout = run pipeline.getBindGroupLayout(0)
     let entries = [
       entry(0, params),
-      textureEntry(1, &list[0].view),
+      textureEntry(1, copied),
       textureEntry(2, &list[content].view),
-      textureEntry(3, &list[backdropContent].view),
+      textureEntry(3, filtered),
     ]
     let group = run gpu.createBindGroup(
       device,
@@ -2179,19 +2848,71 @@ impl UiRenderer {
     )
     pass.setPipeline(pipeline)
     pass.setBindGroup(0, &group, &[])
-    pass.setScissorRect(area.x, area.y, area.width, area.height)
+    let local = localTo(&area, &within)
+    pass.setScissorRect(local.x, local.y, local.width, local.height)
     pass.draw(3, 1, 0, 0)
     pass.end()
   }
 
-  /// One pass on `view` (cleared to `clear` unless `load`) drawing batches `from .. to` of `layer`,
-  /// none of which may be an isolated layer.
+  /// Draws the primitives of `layer`, which is drawn inline, and of the one layer it may wrap
+  /// (see `planInline`), in `pass`.
+  effect fn drawInline(
+    self: &Self,
+    device: &Device,
+    pass: &mut RenderPassEncoder<'_>,
+    globals: &Buffer,
+    pipelines: &Pipelines,
+    set: u32,
+    globalsId: u32,
+    scene: &Scene,
+    atlas: &GpuAtlas,
+    layer: u32,
+    draws: &mut Draws,
+  ) -> ()
+    ! GpuError | OutOfMemoryError
+    ? &mut Allocator {
+    run self.drawBatches(
+      device,
+      &mut pass,
+      globals,
+      pipelines,
+      set,
+      globalsId,
+      scene,
+      atlas,
+      layer,
+      0,
+      scene.batches(layer).length,
+      &mut draws,
+    )
+    let nested = scene.layers(layer)
+    let mut i: usize = 0
+    while i < nested.length {
+      run self.drawBatches(
+        device,
+        &mut pass,
+        globals,
+        pipelines,
+        set,
+        globalsId,
+        scene,
+        atlas,
+        nested[i].layer,
+        0,
+        scene.batches(nested[i].layer).length,
+        &mut draws,
+      )
+      i = i + 1
+    }
+  }
+
+  /// One pass on the target (cleared to `clear` unless `load`) drawing batches `from .. to` of
+  /// `layer`, none of which may be an isolated layer.
   effect fn drawRange(
     self: &Self,
     device: &Device,
     encoder: &mut CommandEncoder,
     view: &TextureView,
-    pipelines: &Pipelines,
     scene: &Scene,
     atlas: &GpuAtlas,
     layer: u32,
@@ -2202,23 +2923,43 @@ impl UiRenderer {
   ) -> ()
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
+    let mut draws = Draws.make()
     let mut pass = run beginPass(&mut encoder, view, load, clear)
-    run self.drawBatches(device, &mut pass, &self.buffers.asSlice()[GLOBALS], pipelines, scene, atlas, layer, from, to)
+    run self.drawBatches(
+      device,
+      &mut pass,
+      &self.buffers.asSlice()[GLOBALS],
+      readyOf(&self.direct),
+      SET_TARGET,
+      0,
+      scene,
+      atlas,
+      layer,
+      from,
+      to,
+      &mut draws,
+    )
+    draws.flush(&mut pass)
     pass.end()
   }
 
-  /// Draws batches `from .. to` of `layer` in `pass`, skipping isolated layers.
+  /// Draws batches `from .. to` of `layer` in `pass` with `pipelines`, the pipelines of surface
+  /// kind `set`, skipping isolated layers. `globalsId` names `globals` among the frame's globals
+  /// uniforms. The last draw waits in `draws` for one that may join it (see [`Draws.flush`]).
   effect fn drawBatches(
     self: &Self,
     device: &Device,
     pass: &mut RenderPassEncoder<'_>,
     globals: &Buffer,
     pipelines: &Pipelines,
+    set: u32,
+    globalsId: u32,
     scene: &Scene,
     atlas: &GpuAtlas,
     layer: u32,
     from: usize,
     to: usize,
+    draws: &mut Draws,
   ) -> ()
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
@@ -2227,9 +2968,6 @@ impl UiRenderer {
     }
     let b = self.buffers.asSlice()
     let batches = scene.batches(layer)
-    let mut imageGroups = List<BindGroup>.make()
-    let mut imageTextures = List<u32>.make()
-    let mut lastKind: u32 = 255
     let mut i = from
     while i < to {
       let batch = batches[i]
@@ -2237,108 +2975,107 @@ impl UiRenderer {
       let base = self.instances.base(layer, kind)
       let first = base + batch.start
       let count = batch.end - batch.start
+      let id = set * 16 + kind
       match batch.kind {
         PrimitiveKind.Shadow => {
-          let layout = run pipelines.shadow.getBindGroupLayout(0)
-          let entries = [entry(0, globals), entry(1, &b[SHADOWS])]
-          let group = run gpu.createBindGroup(
-            device,
-            &BindGroupDescriptor.default().withLayout(&layout).withEntries(&entries),
-          )
-          pass.setPipeline(&pipelines.shadow)
-          lastKind = kind
-          pass.setBindGroup(0, &group, &[])
-          pass.draw(6, count, 0, first)
+          let key = Draws.key(set, kind, globalsId, 0)
+          let mut group = draws.find(key)
+          if group == usize.MAX {
+            let layout = run pipelines.shadow.getBindGroupLayout(0)
+            let entries = [entry(0, globals), entry(1, &b[SHADOWS]), entry(8, &b[TRANSFORMS])]
+            group = run draws.add(key, run gpu.createBindGroup(
+              device,
+              &BindGroupDescriptor.default().withLayout(&layout).withEntries(&entries),
+            ))
+          }
+          draws.draw(&mut pass, &pipelines.shadow, id, group, first, count)
         }
         PrimitiveKind.Quad => {
-          let layout = run pipelines.quad.getBindGroupLayout(0)
-          let entries = [entry(0, globals), entry(1, &b[QUADS]), entry(7, &b[RAMPS])]
-          let group = run gpu.createBindGroup(
-            device,
-            &BindGroupDescriptor.default().withLayout(&layout).withEntries(&entries),
-          )
-          pass.setPipeline(&pipelines.quad)
-          lastKind = kind
-          pass.setBindGroup(0, &group, &[])
-          pass.draw(6, count, 0, first)
+          let key = Draws.key(set, kind, globalsId, 0)
+          let mut group = draws.find(key)
+          if group == usize.MAX {
+            let layout = run pipelines.quad.getBindGroupLayout(0)
+            let entries = [entry(0, globals), entry(1, &b[QUADS]), entry(7, &b[RAMPS]), entry(8, &b[TRANSFORMS])]
+            group = run draws.add(key, run gpu.createBindGroup(
+              device,
+              &BindGroupDescriptor.default().withLayout(&layout).withEntries(&entries),
+            ))
+          }
+          draws.draw(&mut pass, &pipelines.quad, id, group, first, count)
         }
         PrimitiveKind.Underline => {
-          let layout = run pipelines.underline.getBindGroupLayout(0)
-          let entries = [entry(0, globals), entry(1, &b[UNDERLINES])]
-          let group = run gpu.createBindGroup(
-            device,
-            &BindGroupDescriptor.default().withLayout(&layout).withEntries(&entries),
-          )
-          pass.setPipeline(&pipelines.underline)
-          lastKind = kind
-          pass.setBindGroup(0, &group, &[])
-          pass.draw(6, count, 0, first)
+          let key = Draws.key(set, kind, globalsId, 0)
+          let mut group = draws.find(key)
+          if group == usize.MAX {
+            let layout = run pipelines.underline.getBindGroupLayout(0)
+            let entries = [entry(0, globals), entry(1, &b[UNDERLINES]), entry(8, &b[TRANSFORMS])]
+            group = run draws.add(key, run gpu.createBindGroup(
+              device,
+              &BindGroupDescriptor.default().withLayout(&layout).withEntries(&entries),
+            ))
+          }
+          draws.draw(&mut pass, &pipelines.underline, id, group, first, count)
         }
         PrimitiveKind.Glyph => {
           if u32.toUsize(batch.texture) < atlas.textureCount() {
-            let layout = run pipelines.mono.getBindGroupLayout(0)
-            let entries = [
-              entry(0, globals),
-              entry(1, &b[GLYPHS]),
-              textureEntry(2, atlas.view(u32.toUsize(batch.texture))),
-            ]
-            let group = run gpu.createBindGroup(
-              device,
-              &BindGroupDescriptor.default().withLayout(&layout).withEntries(&entries),
-            )
-            pass.setPipeline(&pipelines.mono)
-            lastKind = kind
-            pass.setBindGroup(0, &group, &[])
-            pass.draw(6, count, 0, first)
+            let key = Draws.key(set, kind, globalsId, batch.texture)
+            let mut group = draws.find(key)
+            if group == usize.MAX {
+              let layout = run pipelines.mono.getBindGroupLayout(0)
+              let entries = [
+                entry(0, globals),
+                entry(1, &b[GLYPHS]),
+                textureEntry(2, atlas.view(u32.toUsize(batch.texture))),
+                entry(8, &b[TRANSFORMS]),
+              ]
+              group = run draws.add(key, run gpu.createBindGroup(
+                device,
+                &BindGroupDescriptor.default().withLayout(&layout).withEntries(&entries),
+              ))
+            }
+            draws.draw(&mut pass, &pipelines.mono, id, group, first, count)
           }
         }
         PrimitiveKind.Image => {
           if u32.toUsize(batch.texture) < atlas.textureCount() {
-            let mut slot: usize = 0
-            while slot < imageTextures.length() && imageTextures.get(slot) != batch.texture {
-              slot = slot + 1
-            }
-            if slot == imageTextures.length() {
+            let key = Draws.key(set, kind, globalsId, batch.texture)
+            let mut group = draws.find(key)
+            if group == usize.MAX {
               let layout = run pipelines.poly.getBindGroupLayout(0)
               let entries = [
                 entry(0, globals),
                 entry(1, &b[IMAGES]),
                 textureEntry(2, atlas.view(u32.toUsize(batch.texture))),
+                entry(8, &b[TRANSFORMS]),
               ]
-              let group = run gpu.createBindGroup(
+              group = run draws.add(key, run gpu.createBindGroup(
                 device,
                 &BindGroupDescriptor.default().withLayout(&layout).withEntries(&entries),
-              )
-              run imageGroups.append(move group)
-              run imageTextures.append(batch.texture)
+              ))
             }
-            if lastKind != kind {
-              pass.setPipeline(&pipelines.poly)
-              lastKind = kind
-            }
-            pass.setBindGroup(0, &imageGroups.asSlice()[slot], &[])
-            pass.draw(6, count, 0, first)
+            draws.draw(&mut pass, &pipelines.poly, id, group, first, count)
           }
         }
         PrimitiveKind.Path => {
           let range = self.instances.runRange(first, first + count)
           if range[1] > range[0] {
-            let layout = run pipelines.path.getBindGroupLayout(0)
-            let entries = [
-              entry(0, globals),
-              entry(1, &b[RUNS]),
-              entry(2, &b[PATHS]),
-              entry(3, &b[ALPHAS]),
-              entry(7, &b[RAMPS]),
-            ]
-            let group = run gpu.createBindGroup(
-              device,
-              &BindGroupDescriptor.default().withLayout(&layout).withEntries(&entries),
-            )
-            pass.setPipeline(&pipelines.path)
-            lastKind = kind
-            pass.setBindGroup(0, &group, &[])
-            pass.draw(6, range[1] - range[0], 0, range[0])
+            let key = Draws.key(set, kind, globalsId, 0)
+            let mut group = draws.find(key)
+            if group == usize.MAX {
+              let layout = run pipelines.path.getBindGroupLayout(0)
+              let entries = [
+                entry(0, globals),
+                entry(1, &b[RUNS]),
+                entry(2, &b[PATHS]),
+                entry(3, &b[ALPHAS]),
+                entry(7, &b[RAMPS]),
+              ]
+              group = run draws.add(key, run gpu.createBindGroup(
+                device,
+                &BindGroupDescriptor.default().withLayout(&layout).withEntries(&entries),
+              ))
+            }
+            draws.draw(&mut pass, &pipelines.path, id, group, range[0], range[1] - range[0])
           }
         }
         PrimitiveKind.Layer => {}
