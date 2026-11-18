@@ -226,6 +226,21 @@ impl<T: Copy> Items<T> {
     run self.keys.appendSlice(other.keys.asSlice())
   }
 
+  /// Gives back the room its lists do not use.
+  effect fn shrink(self: &mut Self) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    run self.added.shrinkToFit()
+    run self.orders.shrinkToFit()
+    run self.textures.shrinkToFit()
+    run self.groups.shrinkToFit()
+    run self.sorted.shrinkToFit()
+    run self.sortedOrders.shrinkToFit()
+    run self.sortedTextures.shrinkToFit()
+    run self.sortedGroups.shrinkToFit()
+    run self.keys.shrinkToFit()
+  }
+
   /// Takes the sorted lists of `other`, what drawing reads, and leaves the rest empty.
   effect fn copyDrawnFrom(self: &mut Self, other: &Items<T>) -> ()
     ! OutOfMemoryError
@@ -414,6 +429,19 @@ impl LayerData {
     run self.layers.copyFrom(&other.layers)
     self.batches.clear()
     run self.batches.appendSlice(other.batches.asSlice())
+  }
+
+  effect fn shrink(self: &mut Self) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    run self.shadows.shrink()
+    run self.quads.shrink()
+    run self.paths.shrink()
+    run self.underlines.shrink()
+    run self.glyphs.shrink()
+    run self.images.shrink()
+    run self.layers.shrink()
+    run self.batches.shrinkToFit()
   }
 
   effect fn copyDrawnFrom(self: &mut Self, other: &LayerData) -> ()
@@ -655,9 +683,14 @@ pub struct Scene {
   scrollIndex: ScrollIndex,
   /// Every [`Scene.setScroll`] call, for replay.
   scrollLog: List<ScrollPosition>,
+  /// How many frames in a row have used under half of the layers the scene keeps (see `trim`).
+  slack: u32,
   /// The stops of every [`StopsGradient`] in the frame.
   stops: List<ColorStop>,
 }
+
+/// Frames a scene keeps storage that under half of it is used of (see `Scene.trim`).
+const TRIM_FRAMES: u32 = 240
 
 fn maxU32(a: u32, b: u32) -> u32 {
   if a > b {
@@ -728,6 +761,7 @@ impl Scene {
       scrollPositions: List<ScrollPosition>.make(),
       scrollIndex: ScrollIndex.make(),
       scrollLog: List<ScrollPosition>.make(),
+      slack: 0,
       stops: List<ColorStop>.make(),
     }
   }
@@ -802,6 +836,46 @@ impl Scene {
       at = at + 1
     }
     run self.stops.appendSlice(other.stops.asSlice())
+    run self.trim()
+  }
+
+  /// Gives back the storage a much larger frame left. A scene keeps its storage between frames
+  /// so that painting allocates nothing; after [`TRIM_FRAMES`] frames in a row that use under
+  /// half of its layers, it drops the layers past those and shrinks the lists of what is left
+  /// to what they hold.
+  effect fn trim(self: &mut Self) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    let used = u32.toUsize(self.layersUsed)
+    if self.layerData.length() <= used * 2 + 32 {
+      self.slack = 0
+      return
+    }
+    self.slack = self.slack + 1
+    if self.slack < TRIM_FRAMES {
+      return
+    }
+    self.slack = 0
+    while self.layerData.length() > used + 16 {
+      drop self.layerData.pop()
+    }
+    run self.layerData.shrinkToFit()
+    let data = self.layerData.asMutSlice()
+    let mut i: usize = 0
+    while i < used {
+      run data[i].shrink()
+      i = i + 1
+    }
+    run self.masks.shrinkToFit()
+    run self.operations.shrinkToFit()
+    run self.pushes.shrinkToFit()
+    run self.strips.shrinkToFit()
+    run self.fills.shrinkToFit()
+    run self.alphas.shrinkToFit()
+    run self.groups.shrinkToFit()
+    run self.scrollPositions.shrinkToFit()
+    run self.scrollLog.shrinkToFit()
+    run self.stops.shrinkToFit()
   }
 
   /// Empties the scene for the next frame and keeps its storage.
@@ -1505,6 +1579,8 @@ impl Scene {
       run data[i].buildBatches()
       i = i + 1
     }
+    drop data
+    run self.trim()
   }
 
   /// The number of layers: 1 for the window plus one per isolated layer (0 for an unused scene).
