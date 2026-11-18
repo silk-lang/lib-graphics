@@ -34,7 +34,6 @@ import silk.core.equal { Equal }
 import silk.core.order { Order, Ordering }
 import silk.core.ownership { Copy }
 import silk.geometry.matrix { Matrix3 }
-import silk.geometry.corners { Corners }
 import silk.geometry.rect { Rect }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
 import silk.num.f32
@@ -46,6 +45,7 @@ import effects { LayerEffects }
 import bounds_tree { BoundsTree }
 import scroll { ScrollGroup, ScrollIndex, ScrollLink, ScrollPosition, ScrollAxis, ROOT_GROUP }
 import color
+import radii { Radii }
 import primitives {
   Background,
   ColorStop,
@@ -712,7 +712,7 @@ fn rootGroup() -> ScrollGroup {
     parent: ROOT_GROUP,
     link: ScrollLink { node: 4294967295, x: ScrollAxis.fixed(), y: ScrollAxis.fixed() },
     clip: everything,
-    clipRadii: Corners<f32>.zero(),
+    clipRadii: Radii.zero(),
     bounds: everything,
   }
 }
@@ -740,8 +740,7 @@ fn clipped(bounds: Rect<f32>, mask: ContentMask) -> Rect<f32> {
 fn sameMask(a: ContentMask, b: ContentMask) -> bool {
   return a.bounds.xMin == b.bounds.xMin && a.bounds.yMin == b.bounds.yMin
     && a.bounds.xMax == b.bounds.xMax && a.bounds.yMax == b.bounds.yMax
-    && a.radii.topLeft == b.radii.topLeft && a.radii.topRight == b.radii.topRight
-    && a.radii.bottomRight == b.radii.bottomRight && a.radii.bottomLeft == b.radii.bottomLeft
+    && a.radii.same(b.radii)
 }
 
 fn isVisible(bounds: Rect<f32>) -> bool {

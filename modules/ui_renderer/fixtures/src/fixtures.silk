@@ -12,6 +12,7 @@ import silk.num.f32
 import silk.num.f64
 import silk.num.u32
 import silk.num.usize
+import ui_scene.radii { Radii }
 import ui_scene.color as color
 import silk.color.color { ColorSpace, HueInterpolation, Interpolation }
 import silk.color.rgba { Rgba }
@@ -75,7 +76,7 @@ pub fn window() -> ContentMask {
 
 fn rounded(bounds: Rect<f32>, radius: f32, background: Background) -> Quad {
   let mut q = Quad.fill(bounds, window(), background)
-  q.cornerRadii = Corners<f32>.uniform(radius)
+  q.cornerRadii = Radii.uniform(radius)
   return q
 }
 
@@ -91,7 +92,7 @@ fn shadow(
   return Shadow {
     bounds: bounds,
     mask: window(),
-    cornerRadii: Corners<f32>.uniform(radius),
+    cornerRadii: Radii.uniform(radius),
     color: shade,
     blurRadius: blur,
     offset: Vector2<f32>.new(0.0, dy),
@@ -211,7 +212,7 @@ pub effect fn cards(scene: &mut Scene, tiles: &mut Tiles) -> ()
       0.0,
       Background.linear(90.0 + u32.toF32(i) * 45.0, color.rgb(0x4f46e5), color.rgb(0x06b6d4)),
     )
-    header.cornerRadii = Corners<f32>.new(10.0, 10.0, 0.0, 0.0)
+    header.cornerRadii = Radii.circular(Corners<f32>.new(10.0, 10.0, 0.0, 0.0))
     drop run scene.quad(header)
     let mut g: u32 = 0
     while g < 9 {
@@ -242,7 +243,7 @@ pub effect fn cards(scene: &mut Scene, tiles: &mut Tiles) -> ()
         mask: window(),
         tile: picture,
         opacity: 1.0,
-        cornerRadii: Corners<f32>.uniform(6.0),
+        cornerRadii: Radii.uniform(6.0),
         grayscale: i == 1,
         nearest: i == 2,
       },
@@ -292,7 +293,7 @@ pub effect fn borders(scene: &mut Scene) -> ()
     Quad.fill(rect(0.0, 0.0, 240.0, 180.0), window(), Background.solid(color.white())),
   )
   let mut a = rounded(rect(10.0, 10.0, 60.0, 60.0), 0.0, Background.solid(color.rgb(0xfde68a)))
-  a.cornerRadii = Corners<f32>.new(0.0, 12.0, 30.0, 4.0)
+  a.cornerRadii = Radii.circular(Corners<f32>.new(0.0, 12.0, 30.0, 4.0))
   a.borderWidths = Insets<f32>.new(2.0, 6.0, 10.0, 1.0)
   a.borderColor = color.rgb(0x92400e)
   drop run scene.quad(a)
@@ -508,7 +509,7 @@ pub effect fn nested(scene: &mut Scene, tiles: &mut Tiles) -> ()
       mask: ContentMask.new(rect(150.0, 75.5, 80.0, 30.0)),
       tile: picture,
       opacity: 0.7,
-      cornerRadii: Corners<f32>.uniform(0.0),
+      cornerRadii: Radii.uniform(0.0),
       grayscale: false,
       nearest: false,
     },
@@ -924,7 +925,7 @@ pub effect fn dense(
       s.mask = all
       drop run scene.shadow(s)
       let mut q = Quad.fill(card, all, Background.solid(color.white()))
-      q.cornerRadii = Corners<f32>.uniform(6.0)
+      q.cornerRadii = Radii.uniform(6.0)
       q.borderWidths = Insets<f32>.uniform(1.0)
       q.borderColor = color.rgb(0xe2e8f0)
       drop run scene.quad(q)
@@ -1061,7 +1062,7 @@ pub effect fn roundedMasks(scene: &mut Scene, tiles: &mut Tiles) -> ()
   ? &mut Allocator {
   let glyph = run glyphTile(&mut tiles)
   drop run scene.quad(Quad.fill(rect(0.0, 0.0, 240.0, 180.0), window(), Background.solid(color.rgb(0xf8fafc))))
-  let card = ContentMask.rounded(rect(10.0, 10.0, 100.0, 76.0), Corners<f32>.new(24.0, 10.0, 30.0, 0.0))
+  let card = ContentMask.rounded(rect(10.0, 10.0, 100.0, 76.0), Radii.circular(Corners<f32>.new(24.0, 10.0, 30.0, 0.0)))
   drop run scene.quad(
     Quad.fill(rect(0.0, 0.0, 120.0, 96.0), card, Background.linear(135.0, color.rgb(0x7c3aed), color.rgb(0xf472b6))),
   )
@@ -1079,11 +1080,11 @@ pub effect fn roundedMasks(scene: &mut Scene, tiles: &mut Tiles) -> ()
   s.mask = card
   drop run scene.shadow(s)
   // A mask inside another: the inner one's square corner at the bottom left rounds by the outer.
-  let outer = ContentMask.rounded(rect(130.0, 10.0, 100.0, 76.0), Corners<f32>.uniform(20.0))
+  let outer = ContentMask.rounded(rect(130.0, 10.0, 100.0, 76.0), Radii.uniform(20.0))
   let inner = outer.intersect(ContentMask.new(rect(120.0, 30.0, 70.0, 70.0)))
   drop run scene.quad(Quad.fill(rect(120.0, 0.0, 120.0, 100.0), inner, Background.solid(color.rgb(0x0ea5e9))))
   // A faded layer and a turned layer, both landing in a rounded mask.
-  let tile = ContentMask.rounded(rect(10.0, 96.0, 220.0, 76.0), Corners<f32>.uniform(26.0))
+  let tile = ContentMask.rounded(rect(10.0, 96.0, 220.0, 76.0), Radii.uniform(26.0))
   drop run scene.pushIsolatedLayer(rect(0.0, 90.0, 120.0, 90.0), tile, Isolation { opacity: 0.6, blend: 0 })
   drop run scene.quad(Quad.fill(rect(0.0, 90.0, 120.0, 90.0), window(), Background.solid(color.rgb(0x16a34a))))
   run scene.popLayer()
@@ -1117,7 +1118,7 @@ pub effect fn tiledLayers(scene: &mut Scene, width: u32, height: u32, columns: u
     while column < columns {
       let card = rect(u32.toF32(column) * cw + 8.0, u32.toF32(row) * ch + 8.0, cw - 16.0, ch - 16.0)
       let mut q = Quad.fill(card, all, Background.solid(color.white()))
-      q.cornerRadii = Corners<f32>.uniform(12.0)
+      q.cornerRadii = Radii.uniform(12.0)
       drop run scene.quad(q)
       drop run scene.pushIsolatedLayer(card, all, Isolation { opacity: 0.8, blend: 0 })
       let mut inner = Quad.fill(
@@ -1125,7 +1126,7 @@ pub effect fn tiledLayers(scene: &mut Scene, width: u32, height: u32, columns: u
         all,
         Background.linear(90.0, color.rgb(0x6366f1), color.rgb(0x14b8a6)),
       )
-      inner.cornerRadii = Corners<f32>.uniform(8.0)
+      inner.cornerRadii = Radii.uniform(8.0)
       drop run scene.quad(inner)
       run scene.popLayer()
       column = column + 1
@@ -1163,7 +1164,7 @@ pub effect fn effects(scene: &mut Scene) -> ()
   settings = LayerEffects.none()
   settings.backdropBlur = 6.0
   settings.clip = rect(85.0, 80.0, 70.0, 80.0)
-  settings.radius = 14.0
+  settings.radii = Radii.uniform(14.0)
   drop run scene.pushEffectLayer(
     settings.clip,
     window(),
@@ -1192,7 +1193,7 @@ pub effect fn masks(scene: &mut Scene) -> ()
     settings,
   )
   let mut card = Quad.fill(rect(16.0, 14.0, 70.0, 50.0), window(), Background.solid(color.rgb(0xe05a3a)))
-  card.cornerRadii = Corners<f32>.uniform(10.0)
+  card.cornerRadii = Radii.uniform(10.0)
   drop run scene.quad(card)
   run scene.popLayer()
 
@@ -1232,11 +1233,74 @@ pub effect fn masks(scene: &mut Scene) -> ()
   )
   drop run scene.pushMaskLayer()
   let mut round = Quad.fill(rect(40.0, 100.0, 160.0, 70.0), window(), Background.solid(color.rgb(0x000000)))
-  round.cornerRadii = Corners<f32>.uniform(35.0)
+  round.cornerRadii = Radii.uniform(35.0)
   drop run scene.quad(round)
   run scene.popLayer()
   drop run scene.quad(
     Quad.fill(rect(60.0, 110.0, 120.0, 40.0), window(), Background.solid(color.rgba(0xffffff80))),
   )
+  run scene.popLayer()
+}
+
+fn ellipse(x: Corners<f32>, y: Corners<f32>) -> Radii {
+  return Radii.new(x, y)
+}
+
+/// Elliptical corners on every primitive that has corners: quads (filled, with uneven borders, radii that overlap and shrink together; dashes along an elliptical arc are spaced by angle on the
+/// GPU and by length on the CPU, so they are left out), drop and inset shadows with spread,
+/// content masks with glyphs and underlines, a layer landing in an elliptical mask, and a
+/// backdrop blur clipped to an ellipse.
+pub effect fn ellipticalCorners(scene: &mut Scene, tiles: &mut Tiles) -> ()
+  ! AtlasError | OutOfMemoryError
+  ? &mut Allocator {
+  let glyph = run glyphTile(&mut tiles)
+  drop run scene.quad(Quad.fill(rect(0.0, 0.0, 240.0, 180.0), window(), Background.solid(color.rgb(0xf1f5f9))))
+  let mut a = Quad.fill(rect(6.0, 6.0, 70.0, 40.0), window(), Background.solid(color.rgb(0x2563eb)))
+  a.cornerRadii = ellipse(Corners<f32>.new(30.0, 8.0, 20.0, 0.0), Corners<f32>.new(14.0, 20.0, 10.0, 6.0))
+  drop run scene.quad(a)
+  let mut b = Quad.fill(rect(84.0, 6.0, 70.0, 40.0), window(), Background.solid(color.rgb(0xfde68a)))
+  b.cornerRadii = ellipse(Corners<f32>.uniform(26.0), Corners<f32>.uniform(12.0))
+  b.borderWidths = Insets<f32>.new(3.0, 9.0, 6.0, 1.0)
+  b.borderColor = color.rgba(0xb91c1ccc)
+  drop run scene.quad(b)
+  // Radii past the box: every one shrinks by the same factor (50% on a wide box is an ellipse).
+  let mut c = Quad.fill(rect(162.0, 6.0, 72.0, 40.0), window(), Background.solid(color.rgb(0x059669)))
+  c.cornerRadii = ellipse(Corners<f32>.new(60.0, 50.0, 36.0, 36.0), Corners<f32>.new(30.0, 30.0, 20.0, 20.0))
+  c.borderWidths = Insets<f32>.uniform(4.0)
+  c.borderColor = color.rgb(0x064e3b)
+  drop run scene.quad(c)
+  let mut d = shadow(rect(14.0, 62.0, 56.0, 36.0), 0.0, 8.0, 3.0, 4.0, color.rgba(0x000000aa), false)
+  d.cornerRadii = ellipse(Corners<f32>.new(24.0, 4.0, 18.0, 2.0), Corners<f32>.new(10.0, 14.0, 8.0, 12.0))
+  drop run scene.shadow(d)
+  let mut e = shadow(rect(84.0, 58.0, 64.0, 44.0), 0.0, 6.0, 2.0, -6.0, color.rgba(0x7c2d12cc), true)
+  e.cornerRadii = ellipse(Corners<f32>.uniform(30.0), Corners<f32>.uniform(14.0))
+  drop run scene.quad(Quad.fill(rect(84.0, 58.0, 64.0, 44.0), window(), Background.solid(color.rgb(0xffffff))))
+  drop run scene.shadow(e)
+  let mut f = shadow(rect(168.0, 62.0, 56.0, 30.0), 0.0, 0.0, 0.0, 6.0, color.rgb(0x9333ea), false)
+  f.cornerRadii = ellipse(Corners<f32>.new(2.0, 16.0, 28.0, 0.0), Corners<f32>.new(2.0, 8.0, 15.0, 0.0))
+  drop run scene.shadow(f)
+  let card = ContentMask.rounded(rect(8.0, 112.0, 104.0, 60.0), ellipse(Corners<f32>.uniform(52.0), Corners<f32>.uniform(30.0)))
+  drop run scene.quad(
+    Quad.fill(rect(0.0, 104.0, 120.0, 76.0), card, Background.linear(90.0, color.rgb(0x0ea5e9), color.rgb(0x6366f1))),
+  )
+  let mut g: u32 = 0
+  while g < 14 {
+    drop run scene.glyph(
+      GlyphSprite { bounds: rect(4.0 + u32.toF32(g) * 8.0, 116.0, 7.0, 9.0), mask: card, tile: glyph, color: color.rgb(0xffffff) },
+    )
+    g = g + 1
+  }
+  drop run scene.underline(
+    Underline { bounds: rect(0.0, 160.0, 120.0, 6.0), mask: card, color: color.rgb(0xfacc15), thickness: 5.0, wavy: false },
+  )
+  let tile = ContentMask.rounded(rect(128.0, 108.0, 104.0, 66.0), ellipse(Corners<f32>.new(40.0, 10.0, 52.0, 0.0), Corners<f32>.new(20.0, 30.0, 33.0, 0.0)))
+  drop run scene.pushIsolatedLayer(rect(120.0, 100.0, 120.0, 80.0), tile, Isolation { opacity: 0.7, blend: 0 })
+  drop run scene.quad(Quad.fill(rect(120.0, 100.0, 120.0, 80.0), window(), Background.solid(color.rgb(0xdc2626))))
+  run scene.popLayer()
+  let mut settings = LayerEffects.none()
+  settings.backdropBlur = 4.0
+  settings.clip = rect(150.0, 120.0, 70.0, 40.0)
+  settings.radii = ellipse(Corners<f32>.uniform(35.0), Corners<f32>.uniform(20.0))
+  drop run scene.pushEffectLayer(settings.clip, window(), Isolation { opacity: 1.0, blend: 0 }, settings)
   run scene.popLayer()
 }

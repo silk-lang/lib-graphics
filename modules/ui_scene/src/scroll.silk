@@ -17,13 +17,13 @@
 import silk.collections.list { List }
 import silk.core.ownership { Copy }
 import silk.geometry.matrix { Matrix3 }
-import silk.geometry.corners { Corners }
 import silk.geometry.rect { Rect }
 import silk.geometry.vector { Vector2 }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
 import silk.num.f32
 import silk.num.u32
 import silk.num.usize
+import radii { Radii }
 import primitives {
   ContentMask,
   GlyphSprite,
@@ -131,7 +131,7 @@ pub struct ScrollGroup {
   /// What the group's primitives are cut to, in its parent's space.
   pub clip: Rect<f32>,
   /// The corner radii of `clip`, zero for a plain rectangle.
-  pub clipRadii: Corners<f32>,
+  pub clipRadii: Radii,
   /// Where the group's primitives can draw at any scroll, in its parent's space: what the group
   /// is ordered by against everything around it.
   pub bounds: Rect<f32>,

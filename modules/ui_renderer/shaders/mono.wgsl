@@ -7,7 +7,7 @@ struct MonoSprite {
   // straight alpha
   color: vec4f,
   tile: vec4f,
-  maskRadii: vec4f,
+  maskRadii: Radii,
   // x is the transform.
   extra: vec4f,
 }

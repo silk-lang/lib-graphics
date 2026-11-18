@@ -28,26 +28,27 @@ import ui_scene.primitives {
   Shadow,
   Underline,
 }
+import ui_scene.radii { Radii }
 import ui_scene.scene { PrimitiveKind, Scene, KIND_COUNT }
 import ui_scene.scroll { Placements }
 import vector.pixmap { pack }
 import vector.strips { Fill, Strip }
 
 /// Bytes per instance of each kind, matching the structs in `shaders/`.
-pub const QUAD_BYTES: usize = 176
+pub const QUAD_BYTES: usize = 208
 
-pub const SHADOW_BYTES: usize = 144
+pub const SHADOW_BYTES: usize = 192
 
-pub const UNDERLINE_BYTES: usize = 80
+pub const UNDERLINE_BYTES: usize = 96
 
-pub const MONO_BYTES: usize = 96
+pub const MONO_BYTES: usize = 112
 
 /// Bytes of a `Transform` of `shaders/common.wgsl`.
 pub const TRANSFORM_BYTES: usize = 128
 
-pub const POLY_BYTES: usize = 112
+pub const POLY_BYTES: usize = 144
 
-pub const PATH_BYTES: usize = 112
+pub const PATH_BYTES: usize = 128
 
 pub const RUN_BYTES: usize = 32
 
@@ -108,6 +109,14 @@ effect fn pushCorners(bytes: &mut List<u8>, c: Corners<f32>) -> ()
   ! OutOfMemoryError
   ? &mut Allocator {
   run push4(&mut bytes, c.topLeft, c.topRight, c.bottomRight, c.bottomLeft)
+}
+
+/// The horizontal radii, then the vertical ones: a WGSL `Radii`.
+effect fn pushRadii(bytes: &mut List<u8>, r: Radii) -> ()
+  ! OutOfMemoryError
+  ? &mut Allocator {
+  run pushCorners(&mut bytes, r.x)
+  run pushCorners(&mut bytes, r.y)
 }
 
 /// Appends the 256-entry ramp from `from` to `to` to `ramps`, sampled with the same `color.mix`
@@ -313,7 +322,7 @@ effect fn packQuad(scene: &Scene, bytes: &mut List<u8>, ramps: &mut List<u8>, ca
   ? &mut Allocator {
   run pushRect(&mut bytes, q.bounds)
   run pushRect(&mut bytes, q.mask.bounds)
-  run pushCorners(&mut bytes, q.cornerRadii)
+  run pushRadii(&mut bytes, q.cornerRadii.fittedTo(q.bounds))
   let w = q.borderWidths
   run push4(&mut bytes, w.top, w.right, w.bottom, w.left)
   let border = if q.hasBorder() {
@@ -327,7 +336,7 @@ effect fn packQuad(scene: &Scene, bytes: &mut List<u8>, ramps: &mut List<u8>, ca
     BorderStyle.Dashed => true
   }
   run pushPaint(scene, &mut bytes, &mut ramps, &mut cache, q.background, q.bounds, dashed, transform)
-  run pushCorners(&mut bytes, q.mask.radii)
+  run pushRadii(&mut bytes, q.mask.radii)
 }
 
 effect fn packShadow(bytes: &mut List<u8>, s: Shadow, transform: f32) -> ()
@@ -335,10 +344,10 @@ effect fn packShadow(bytes: &mut List<u8>, s: Shadow, transform: f32) -> ()
   ? &mut Allocator {
   run pushRect(&mut bytes, s.shape())
   run pushRect(&mut bytes, s.mask.bounds)
-  run pushCorners(&mut bytes, s.shapeRadii())
+  run pushRadii(&mut bytes, s.shapeRadii())
   run pushColor(&mut bytes, s.color)
   run pushRect(&mut bytes, s.bounds)
-  run pushCorners(&mut bytes, s.cornerRadii)
+  run pushRadii(&mut bytes, s.cornerRadii.fittedTo(s.bounds))
   run pushRect(&mut bytes, s.paintBounds())
   run push4(
     &mut bytes,
@@ -351,7 +360,7 @@ effect fn packShadow(bytes: &mut List<u8>, s: Shadow, transform: f32) -> ()
     transform,
     0.0,
   )
-  run pushCorners(&mut bytes, s.mask.radii)
+  run pushRadii(&mut bytes, s.mask.radii)
 }
 
 effect fn packUnderline(bytes: &mut List<u8>, u: Underline, transform: f32) -> ()
@@ -371,7 +380,7 @@ effect fn packUnderline(bytes: &mut List<u8>, u: Underline, transform: f32) -> (
     transform,
     0.0,
   )
-  run pushCorners(&mut bytes, u.mask.radii)
+  run pushRadii(&mut bytes, u.mask.radii)
 }
 
 effect fn pushTile(bytes: &mut List<u8>, r: Rect<u32>) -> ()
@@ -387,7 +396,7 @@ effect fn packGlyph(bytes: &mut List<u8>, g: GlyphSprite, transform: f32) -> ()
   run pushRect(&mut bytes, g.mask.bounds)
   run pushColor(&mut bytes, g.color)
   run pushTile(&mut bytes, g.tile.bounds)
-  run pushCorners(&mut bytes, g.mask.radii)
+  run pushRadii(&mut bytes, g.mask.radii)
   run push4(&mut bytes, transform, 0.0, 0.0, 0.0)
 }
 
@@ -398,7 +407,7 @@ effect fn packImage(bytes: &mut List<u8>, s: ImageSprite, transform: f32) -> ()
   run pushRect(&mut bytes, s.mask.bounds)
   run pushTile(&mut bytes, s.tile.bounds)
   run pushRect(&mut bytes, s.clipBounds)
-  run pushCorners(&mut bytes, s.cornerRadii)
+  run pushRadii(&mut bytes, s.cornerRadii.fittedTo(s.clipBounds))
   run push4(
     &mut bytes,
     s.opacity,
@@ -406,7 +415,7 @@ effect fn packImage(bytes: &mut List<u8>, s: ImageSprite, transform: f32) -> ()
     u32.toF32(s.quarterTurns % 4),
     transform,
   )
-  run pushCorners(&mut bytes, s.mask.radii)
+  run pushRadii(&mut bytes, s.mask.radii)
 }
 
 /// One frame's instances, ready to upload.
@@ -552,7 +561,7 @@ impl Instances {
     run self.pathRuns.append(firstRun)
     run pushRect(&mut self.paths, p.mask.bounds)
     run pushPaint(scene, &mut self.paths, &mut self.ramps, &mut self.rampCache, p.paint, p.paintBounds, false, 0.0)
-    run pushCorners(&mut self.paths, p.mask.radii)
+    run pushRadii(&mut self.paths, p.mask.radii)
     let bottom = p.y + u32.toI32(p.height)
     let mut s = u32.toUsize(p.stripStart)
     while s < u32.toUsize(p.stripStart + p.stripCount) {

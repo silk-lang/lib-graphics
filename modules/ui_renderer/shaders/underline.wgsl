@@ -7,7 +7,7 @@ struct Underline {
   color: vec4f,
   // thickness, wavy (1 or 0), the transform
   params: vec4f,
-  maskRadii: vec4f,
+  maskRadii: Radii,
 }
 @group(0) @binding(1) var<storage, read> underlines: array<Underline>;
 

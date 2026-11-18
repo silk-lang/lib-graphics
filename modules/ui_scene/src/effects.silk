@@ -6,6 +6,7 @@ import silk.num.f32
 import silk.color.rgba { Rgba }
 import silk.core.ownership { Copy }
 import silk.geometry.rect { Rect }
+import radii { Radii, cornerOf, ellipseDistance }
 
 /// The identity of `vector.filter.colorMatrix`: four rows of five, the last column an offset.
 pub const IDENTITY: [f32; 20] = [
@@ -41,10 +42,9 @@ pub struct LayerEffects {
   pub shadow: DropShadow,
   /// Device-pixel bounds of the backdrop clip, before layer blur expands the paint bounds.
   pub clip: Rect<f32>,
-  /// Rounded-rectangle clip radius in device pixels; ignored for an ellipse clip.
-  pub radius: f32,
-  /// Zero clips the backdrop to a rounded rectangle; one clips it to an ellipse.
-  pub shape: u32,
+  /// The backdrop clip's corner radii in device pixels, fitted to `clip` when drawn (an ellipse
+  /// is every corner at half the width and half the height).
+  pub radii: Radii,
 }
 
 impl Copy for LayerEffects {}
@@ -58,8 +58,7 @@ impl LayerEffects {
       color: IDENTITY,
       shadow: DropShadow { x: 0.0, y: 0.0, sigma: 0.0, color: Rgba<f32>.new(0.0, 0.0, 0.0, 0.0) },
       clip: Rect<f32>.new(0.0, 0.0, 0.0, 0.0),
-      radius: 0.0,
-      shape: 0,
+      radii: Radii.zero(),
     }
   }
 
@@ -102,22 +101,23 @@ impl LayerEffects {
     let hy = (self.clip.yMax - self.clip.yMin) * 0.5
     let px = x - self.clip.xMin - hx
     let py = y - self.clip.yMin - hy
-    let r = f32.min(self.radius, f32.min(hx, hy))
-    let qx = f32.abs(px) - hx + r
-    let qy = f32.abs(py) - hy + r
-    let ax = f32.max(qx, 0.0)
-    let ay = f32.max(qy, 0.0)
-    let distance = if self.shape == 1 {
-      let nx = px / f32.max(hx, 0.001)
-      let ny = py / f32.max(hy, 0.001)
-      let length = f32.sqrt(nx * nx + ny * ny)
-      let distance = (length - 1.0) * f32.min(hx, hy)
-      distance
+    let radii = self.radii.fittedTo(self.clip)
+    let ex = cornerOf(radii.x, px < 0.0, py < 0.0)
+    let ey = cornerOf(radii.y, px < 0.0, py < 0.0)
+    let ax = f32.abs(px)
+    let ay = f32.abs(py)
+    let distance = if ex > 0.0 && ey > 0.0 && ax > hx - ex && ay > hy - ey {
+      ellipseDistance(ax - hx + ex, ay - hy + ey, ex, ey)
     } else {
-      f32.sqrt(ax * ax + ay * ay) + f32.min(f32.max(qx, qy), 0.0) - r
+      let bx = ax - hx
+      let by = ay - hy
+      let ox = f32.max(bx, 0.0)
+      let oy = f32.max(by, 0.0)
+      f32.sqrt(ox * ox + oy * oy) + f32.min(f32.max(bx, by), 0.0)
     }
     return f32.max(0.0, f32.min(1.0, 0.5 - distance))
   }
+
 }
 
 /// Returns `outer` applied after `inner`, as one color matrix.

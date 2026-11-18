@@ -15,6 +15,7 @@ import silk.mem.allocator { Allocator, OutOfMemoryError }
 import silk.num.f32
 import silk.num.u32
 import silk.num.usize
+import ui_scene.radii { Radii }
 import ui_scene.effects { LayerEffects }
 import ui_scene.primitives { Isolation }
 import ui_scene.color
@@ -689,11 +690,10 @@ impl Document {
         effects.blur = effects.blur * s
         effects.backdropBlur = effects.backdropBlur * s
         effects.clip = bounds
-        effects.radius = n.radius * s
-        effects.shape = if n.kind == 1 {
-          1
+        effects.radii = if n.kind == 1 {
+          Radii.new(Corners<f32>.uniform(bounds.width() * 0.5), Corners<f32>.uniform(bounds.height() * 0.5))
         } else {
-          0
+          Radii.uniform(n.radius * s)
         }
         drop run scene.pushEffectLayer(
           Rect<f32>.new(
@@ -744,7 +744,7 @@ impl Document {
             mask: mask,
             tile: sourceTile(image.tile, n.source),
             opacity: color.rgba(n.fill).a,
-            cornerRadii: Corners<f32>.uniform(
+            cornerRadii: Radii.uniform(
               if image.cropped {
                 0.0
               } else {
@@ -766,7 +766,7 @@ impl Document {
         )
         drop run self.paths.fill(&mut scene, 1, &self.circle, &transform, NONZERO, fill, mask)
       } else {
-        let radius = Corners<f32>.uniform(n.radius * s)
+        let radius = Radii.uniform(n.radius * s)
         if (n.shadow & 255) != 0 {
           drop run scene.shadow(
             Shadow {

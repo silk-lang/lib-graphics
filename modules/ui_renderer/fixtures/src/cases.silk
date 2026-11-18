@@ -12,7 +12,7 @@ import fixtures
 import fixtures { Tiles, WIDTH, HEIGHT }
 
 /// The number of fixtures.
-pub const COUNT: u32 = 15
+pub const COUNT: u32 = 16
 
 /// How far a fixture may drift from the CPU reference.
 pub struct Tolerance {
@@ -86,6 +86,9 @@ pub effect fn fixture(index: u32) -> Fixture
   } else if index == 13 {
     name = "interpolated stops"
     run fixtures.interpolatedStops(&mut scene)
+  } else if index == 14 {
+    name = "elliptical corners"
+    run fixtures.ellipticalCorners(&mut scene, &mut tiles)
   } else {
     name = "text ramp"
     run fixtures.textRamp(&mut scene, &mut tiles)

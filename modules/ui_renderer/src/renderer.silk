@@ -138,7 +138,7 @@ const PAGE_STEP: u32 = 64
 const SHRINK_FRAMES: u32 = 120
 
 /// Bytes of `shaders/layer.wgsl`'s `Params`.
-const PARAMS_BYTES: usize = 192
+const PARAMS_BYTES: usize = 240
 
 /// Bytes of `shaders/common.wgsl`'s `Globals`.
 const GLOBALS_BYTES: usize = 64
@@ -412,10 +412,11 @@ fn writeMapping(header: &mut [u8], mapping: &Mapping) -> () {
   let c = mapping.clip
   let words = [
     c.bounds.xMin, c.bounds.yMin, c.bounds.xMax, c.bounds.yMax,
-    c.radii.topLeft, c.radii.topRight, c.radii.bottomRight, c.radii.bottomLeft,
+    c.radii.x.topLeft, c.radii.x.topRight, c.radii.x.bottomRight, c.radii.x.bottomLeft,
+    c.radii.y.topLeft, c.radii.y.topRight, c.radii.y.bottomRight, c.radii.y.bottomLeft,
   ]
   let mut k: usize = 0
-  while k < 8 {
+  while k < 12 {
     writeU32(&mut header, 128 + k * 4, f32.toBits(words[k]))
     k = k + 1
   }
@@ -1503,9 +1504,9 @@ impl UiRenderer {
             m[4] / det, -m[3] / det, (m[3] * m[7] - m[4] * m[6]) / det, 0.0,
             -m[1] / det, m[0] / det, (m[1] * m[6] - m[0] * m[7]) / det, 0.0,
             c.bounds.xMin, c.bounds.yMin, c.bounds.xMax, c.bounds.yMax,
-            c.radii.topLeft, c.radii.topRight, c.radii.bottomRight, c.radii.bottomLeft,
+            c.radii.x.topLeft, c.radii.x.topRight, c.radii.x.bottomRight, c.radii.x.bottomLeft,
+            c.radii.y.topLeft, c.radii.y.topRight, c.radii.y.bottomRight, c.radii.y.bottomLeft,
             f32.max(f32.min(opacity, 1.0), 0.0), 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0,
           ]
           let start = self.transforms.length()
           run self.transforms.appendRepeated(0, TRANSFORM_BYTES)
@@ -2243,10 +2244,10 @@ impl UiRenderer {
     }
     let output = self.originOf(surface)
     let contentArea = self.pageAreas.get(u32.toUsize(plan.page))
-    writeU32(&mut header, 160, output.x)
-    writeU32(&mut header, 164, output.y)
-    writeU32(&mut header, 168, contentArea.x)
-    writeU32(&mut header, 172, contentArea.y)
+    writeU32(&mut header, 176, output.x)
+    writeU32(&mut header, 180, output.y)
+    writeU32(&mut header, 184, contentArea.x)
+    writeU32(&mut header, 188, contentArea.y)
     let params = &self.params.asSlice()[slot]
     queue.writeBuffer(params, 0, &header)
     let pipeline = match surface {
@@ -2806,23 +2807,31 @@ impl UiRenderer {
     writeU32(&mut header, 20, f32.toBits(effects.clip.yMin))
     writeU32(&mut header, 24, f32.toBits(effects.clip.xMax))
     writeU32(&mut header, 28, f32.toBits(effects.clip.yMax))
-    writeU32(&mut header, 32, f32.toBits(effects.radius))
-    writeU32(&mut header, 36, effects.shape)
+    let radii = effects.radii.fittedTo(effects.clip)
+    let corners = [
+      radii.x.topLeft, radii.x.topRight, radii.x.bottomRight, radii.x.bottomLeft,
+      radii.y.topLeft, radii.y.topRight, radii.y.bottomRight, radii.y.bottomLeft,
+    ]
+    let mut k: usize = 0
+    while k < 8 {
+      writeU32(&mut header, 208 + k * 4, f32.toBits(corners[k]))
+      k = k + 1
+    }
     writeMapping(&mut header, &mapping)
-    writeU32(&mut header, 160, within.x)
-    writeU32(&mut header, 164, within.y)
-    writeU32(&mut header, 168, regions.content.x)
-    writeU32(&mut header, 172, regions.content.y)
-    writeU32(&mut header, 176, regions.backdrop.x)
-    writeU32(&mut header, 180, regions.backdrop.y)
+    writeU32(&mut header, 176, within.x)
+    writeU32(&mut header, 180, within.y)
+    writeU32(&mut header, 184, regions.content.x)
+    writeU32(&mut header, 188, regions.content.y)
+    writeU32(&mut header, 192, regions.backdrop.x)
+    writeU32(&mut header, 196, regions.backdrop.y)
     let list = self.layers.asSlice()
     let copied = if onTarget { &self.under.asSlice()[0].view } else { &list[0].view }
     let filtered = match backdrop {
       Backdrop.Pool { index } => if onTarget && index == 0 { copied } else { &list[index].view }
       Backdrop.Pyramid { blurred } => {
         writeU32(&mut header, 124, blurred.scale)
-        writeU32(&mut header, 184, blurred.width)
-        writeU32(&mut header, 188, blurred.height)
+        writeU32(&mut header, 200, blurred.width)
+        writeU32(&mut header, 204, blurred.height)
         self.pyramid.view(blurred)
       }
     }

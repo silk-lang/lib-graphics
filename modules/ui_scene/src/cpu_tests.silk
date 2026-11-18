@@ -1,5 +1,6 @@
 //! CPU renderer tests: pixel checks for every primitive kind.
 import atlas.atlas { Atlas, AtlasError, AtlasOptions, Kind }
+import radii { Radii }
 import color
 import effects { LayerEffects, DropShadow, saturate }
 import silk.color.color { ColorSpace, HueInterpolation, Interpolation }
@@ -28,7 +29,6 @@ import silk.geometry.matrix { Matrix3 }
 import silk.geometry.rect { Rect }
 import scene_tests { rect, window }
 import silk.core.effect { Effect }
-import silk.geometry.corners { Corners }
 import silk.geometry.insets { Insets }
 import silk.geometry.vector { Vector2 }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
@@ -93,7 +93,7 @@ effect fn quads() -> ()
     window(),
     Background.solid(color.rgb(0x00ff00)),
   )
-  rounded.cornerRadii = Corners<f32>.uniform(10.0)
+  rounded.cornerRadii = Radii.uniform(10.0)
   drop run scene.quad(rounded)
   let image = run render(&mut scene, &pixels)
   run Testing.expect(is(image.pixel(20, 20), 255, 0, 0, 255), "inside is the fill color")
@@ -114,9 +114,9 @@ effect fn quads() -> ()
 
   // A rounded content mask clips what runs past its corners, directly and through a layer.
   let mut masked = Scene.make()
-  let card = ContentMask.rounded(rect(10.0, 40.0, 40.0, 40.0), Corners<f32>.uniform(12.0))
+  let card = ContentMask.rounded(rect(10.0, 40.0, 40.0, 40.0), Radii.uniform(12.0))
   drop run masked.quad(Quad.fill(rect(0.0, 30.0, 60.0, 60.0), card, Background.solid(color.rgb(0xff0000))))
-  drop run masked.pushIsolatedLayer(rect(50.0, 30.0, 60.0, 60.0), ContentMask.rounded(rect(60.0, 40.0, 40.0, 40.0), Corners<f32>.uniform(12.0)), Isolation { opacity: 1.0, blend: 0 })
+  drop run masked.pushIsolatedLayer(rect(50.0, 30.0, 60.0, 60.0), ContentMask.rounded(rect(60.0, 40.0, 40.0, 40.0), Radii.uniform(12.0)), Isolation { opacity: 1.0, blend: 0 })
   drop run masked.quad(Quad.fill(rect(50.0, 30.0, 60.0, 60.0), window(), Background.solid(color.rgb(0x0000ff))))
   run masked.popLayer()
   let clipped = run render(&mut masked, &pixels)
@@ -128,7 +128,7 @@ effect fn quads() -> ()
   let port = rect(10.0, 10.0, 60.0, 60.0)
   drop run scrolled.pushRoundedScrollGroup(
     ScrollLink { node: 3, x: ScrollAxis.fixed(), y: ScrollAxis.content() },
-    ContentMask.rounded(port, Corners<f32>.uniform(16.0)),
+    ContentMask.rounded(port, Radii.uniform(16.0)),
     port,
   )
   drop run scrolled.quad(Quad.fill(rect(0.0, 0.0, 80.0, 200.0), window(), Background.solid(color.rgb(0x00ff00))))
@@ -138,7 +138,7 @@ effect fn quads() -> ()
   run Testing.expect(is(ported.pixel(10, 10), 0, 0, 0, 0) && is(ported.pixel(69, 69), 0, 0, 0, 0), "a rounded scroll group's corners stay empty")
   run Testing.expect(is(ported.pixel(40, 10), 0, 255, 0, 255), "its content fills the rest")
   let inner = card.intersect(ContentMask.new(rect(0.0, 46.0, 30.0, 60.0)))
-  run Testing.expect(inner.radii.topLeft == 6.0 && inner.radii.bottomLeft == 12.0 && inner.radii.topRight == 0.0, "an intersection keeps the rounding left at its corners")
+  run Testing.expect(inner.radii.x.topLeft == 6.0 && inner.radii.y.topLeft == 6.0 && inner.radii.x.bottomLeft == 12.0 && inner.radii.x.topRight == 0.0, "an intersection keeps the rounding left at its corners")
 }
 
 test effect fn quadsFillClipAndRound() -> ()
@@ -409,7 +409,7 @@ effect fn shadows() -> ()
     Shadow {
       bounds: rect(20.0, 20.0, 30.0, 30.0),
       mask: window(),
-      cornerRadii: Corners<f32>.uniform(0.0),
+      cornerRadii: Radii.uniform(0.0),
       color: color.black(),
       blurRadius: 8.0,
       offset: Vector2<f32>.new(0.0, 0.0),
@@ -421,7 +421,7 @@ effect fn shadows() -> ()
     Shadow {
       bounds: rect(60.0, 60.0, 30.0, 30.0),
       mask: window(),
-      cornerRadii: Corners<f32>.uniform(0.0),
+      cornerRadii: Radii.uniform(0.0),
       color: color.black(),
       blurRadius: 4.0,
       offset: Vector2<f32>.new(0.0, 0.0),
@@ -475,7 +475,7 @@ effect fn sprites() -> ()
       mask: window(),
       tile: poly,
       opacity: 1.0,
-      cornerRadii: Corners<f32>.uniform(0.0),
+      cornerRadii: Radii.uniform(0.0),
       grayscale: false,
       nearest: false,
     },
@@ -488,7 +488,7 @@ effect fn sprites() -> ()
       mask: window(),
       tile: poly,
       opacity: 0.5,
-      cornerRadii: Corners<f32>.uniform(0.0),
+      cornerRadii: Radii.uniform(0.0),
       grayscale: true,
       nearest: false,
     },
@@ -501,7 +501,7 @@ effect fn sprites() -> ()
       mask: window(),
       tile: poly,
       opacity: 1.0,
-      cornerRadii: Corners<f32>.zero(),
+      cornerRadii: Radii.zero(),
       grayscale: false,
       nearest: false,
     },
@@ -514,7 +514,7 @@ effect fn sprites() -> ()
       mask: window(),
       tile: poly,
       opacity: 1.0,
-      cornerRadii: Corners<f32>.zero(),
+      cornerRadii: Radii.zero(),
       grayscale: false,
       nearest: true,
     },
@@ -679,7 +679,7 @@ effect fn filteredLayers() -> ()
   effects = LayerEffects.none()
   effects.backdropBlur = 4.0
   effects.clip = rect(25.0, 25.0, 50.0, 50.0)
-  effects.radius = 10.0
+  effects.radii = Radii.uniform(10.0)
   drop run backdrop.pushEffectLayer(
     effects.clip,
     window(),
