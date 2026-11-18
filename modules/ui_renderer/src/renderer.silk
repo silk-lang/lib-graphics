@@ -630,6 +630,29 @@ fn inlines(scene: &Scene, sprite: &LayerSprite) -> bool {
     && scene.paths(sprite.layer).length == 0
 }
 
+/// How many primitives the shaders can draw through a transform `layer` holds itself.
+fn heldBy(scene: &Scene, layer: u32) -> usize {
+  return scene.quads(layer).length + scene.shadows(layer).length + scene.underlines(layer).length
+    + scene.glyphs(layer).length + scene.images(layer).length
+}
+
+/// Whether `sprite` is an affine layer that only wraps the plain layer `inner`, as a box that is
+/// both moved by a transform and faded paints: a transform layer around an opacity layer. The
+/// two are then drawn inline as one (see `UiRenderer.planInline`), with both opacities.
+fn wraps(scene: &Scene, sprite: &LayerSprite, inner: &LayerSprite) -> bool {
+  let m = sprite.transform.values
+  let det = m[0] * m[4] - m[3] * m[1]
+  let held = heldBy(scene, inner.layer)
+  let opaque = sprite.isolation.opacity >= 1.0 && inner.isolation.opacity >= 1.0
+  return m[2] == 0.0 && m[5] == 0.0 && m[8] == 1.0 && f32.abs(det) > 0.000001
+    && plain(sprite) && scene.maskOf(sprite.layer) == NO_MASK
+    && heldBy(scene, sprite.layer) == 0 && scene.paths(sprite.layer).length == 0
+    && !inner.transformed() && plain(inner) && scene.maskOf(inner.layer) == NO_MASK
+    && !inner.clip.isRounded()
+    && scene.layers(inner.layer).length == 0 && scene.paths(inner.layer).length == 0
+    && (opaque || held == 1)
+}
+
 /// Whether the slow composite of `sprite`, or of a layer inside it, filters through the pool's
 /// scratch textures: a layer blur, a color filter, a drop shadow, a mask, or a backdrop blur too
 /// narrow for the blur pyramid. A wide backdrop blur alone needs none of them.
@@ -907,6 +930,27 @@ impl UiRenderer {
     ? &mut Allocator {
     self.newer.clear()
     run self.newer.appendSlice(positions)
+  }
+
+  /// The bytes of the textures the renderer holds for layers: the composite pool, the pages
+  /// and the blur pyramid, then how many pool textures and pages those are. A texture the GPU
+  /// has not drawn into yet may take no memory.
+  pub fn textureBytes(self: &Self) -> [u64; 5] {
+    let mut pool: u64 = 0
+    let layers = self.layers.asSlice()
+    let mut i: usize = 0
+    while i < layers.length {
+      pool = pool + u32.toU64(layers[i].width) * u32.toU64(layers[i].height) * 4
+      i = i + 1
+    }
+    let mut paged: u64 = 0
+    let pages = self.pages.asSlice()
+    i = 0
+    while i < pages.length {
+      paged = paged + u32.toU64(pages[i].width) * u32.toU64(pages[i].height) * 4
+      i = i + 1
+    }
+    return [pool, paged, self.pyramid.bytes(), usize.toU64(layers.length), usize.toU64(pages.length)]
   }
 
   /// The target format.
@@ -1339,6 +1383,7 @@ impl UiRenderer {
   /// primitives join the frame's instanced draws: it is a layer that needs nothing of a texture
   /// but an affine transform (no mask, blend or filter, and an opacity only when it holds one
   /// primitive) and holds only primitives the shaders can transform, so no layer and no path.
+  /// An affine layer that only wraps one such untransformed layer is drawn inline with it.
   effect fn planInline(self: &mut Self, scene: &Scene) -> ()
     ! OutOfMemoryError
     ? &mut Allocator {
@@ -1353,7 +1398,20 @@ impl UiRenderer {
       let mut i: usize = 0
       while i < sprites.length {
         let sprite = self.placed.layer(sprites[i], groups[i])
-        if inlines(scene, &sprite) {
+        // A layer drawn inline with the layer that wraps it has its transform already.
+        let taken = self.inlineOf(sprite.layer) != 0
+        let nested = scene.layers(sprite.layer)
+        let direct = !taken && inlines(scene, &sprite)
+        let mut wrapped = false
+        let mut opacity = sprite.isolation.opacity
+        if !taken && !direct && nested.length == 1 {
+          let inner = self.placed.layer(nested[0], scene.groupsOf(sprite.layer, PrimitiveKind.Layer)[0])
+          if wraps(scene, &sprite, &inner) {
+            wrapped = true
+            opacity = f32.max(f32.min(opacity, 1.0), 0.0) * inner.isolation.opacity
+          }
+        }
+        if direct || wrapped {
           let index = usize.toU32(self.transforms.length() / TRANSFORM_BYTES)
           let m = sprite.transform.values
           let det = m[0] * m[4] - m[3] * m[1]
@@ -1365,7 +1423,7 @@ impl UiRenderer {
             -m[1] / det, m[0] / det, (m[1] * m[6] - m[0] * m[7]) / det, 0.0,
             c.bounds.xMin, c.bounds.yMin, c.bounds.xMax, c.bounds.yMax,
             c.radii.topLeft, c.radii.topRight, c.radii.bottomRight, c.radii.bottomLeft,
-            f32.max(f32.min(sprite.isolation.opacity, 1.0), 0.0), 0.0, 0.0, 0.0,
+            f32.max(f32.min(opacity, 1.0), 0.0), 0.0, 0.0, 0.0,
             0.0, 0.0, 0.0, 0.0,
           ]
           let start = self.transforms.length()
@@ -1379,6 +1437,9 @@ impl UiRenderer {
           drop bytes
           let inline = self.inline.asMutSlice()
           inline[u32.toUsize(sprite.layer)] = index
+          if wrapped {
+            inline[u32.toUsize(nested[0].layer)] = index
+          }
         }
         i = i + 1
       }
@@ -1958,7 +2019,7 @@ impl UiRenderer {
               let plan = self.assigned.get(u32.toUsize(sprite.layer))
               if area.width > 0 && self.inlineOf(sprite.layer) != 0 {
                 // Its primitives are drawn here, through its transform, like the parent's own.
-                run self.drawBatches(
+                run self.drawInline(
                   device,
                   &mut pass,
                   self.globalsOf(surface),
@@ -1968,8 +2029,6 @@ impl UiRenderer {
                   scene,
                   atlas,
                   sprite.layer,
-                  0,
-                  scene.batches(sprite.layer).length,
                   &mut draws,
                 )
               } else if area.width > 0 && plan != PLANNED_EMPTY {
@@ -2292,7 +2351,7 @@ impl UiRenderer {
           let sprite = self.placed.layer(sprites[i], groups[i])
           let area = intersect(&areaOf(&sprite, width, height), &region)
           if area.width > 0 && self.inlineOf(sprite.layer) != 0 {
-            run self.drawBatches(
+            run self.drawInline(
               device,
               &mut pass,
               &self.regionGlobals.asSlice()[own],
@@ -2302,8 +2361,6 @@ impl UiRenderer {
               scene,
               atlas,
               sprite.layer,
-              0,
-              scene.batches(sprite.layer).length,
               &mut draws,
             )
           } else if area.width > 0 {
@@ -2650,6 +2707,58 @@ impl UiRenderer {
     pass.setScissorRect(local.x, local.y, local.width, local.height)
     pass.draw(3, 1, 0, 0)
     pass.end()
+  }
+
+  /// Draws the primitives of `layer`, which is drawn inline, and of the one layer it may wrap
+  /// (see `planInline`), in `pass`.
+  effect fn drawInline(
+    self: &Self,
+    device: &Device,
+    pass: &mut RenderPassEncoder<'_>,
+    globals: &Buffer,
+    pipelines: &Pipelines,
+    set: u32,
+    globalsId: u32,
+    scene: &Scene,
+    atlas: &GpuAtlas,
+    layer: u32,
+    draws: &mut Draws,
+  ) -> ()
+    ! GpuError | OutOfMemoryError
+    ? &mut Allocator {
+    run self.drawBatches(
+      device,
+      &mut pass,
+      globals,
+      pipelines,
+      set,
+      globalsId,
+      scene,
+      atlas,
+      layer,
+      0,
+      scene.batches(layer).length,
+      &mut draws,
+    )
+    let nested = scene.layers(layer)
+    let mut i: usize = 0
+    while i < nested.length {
+      run self.drawBatches(
+        device,
+        &mut pass,
+        globals,
+        pipelines,
+        set,
+        globalsId,
+        scene,
+        atlas,
+        nested[i].layer,
+        0,
+        scene.batches(nested[i].layer).length,
+        &mut draws,
+      )
+      i = i + 1
+    }
   }
 
   /// One pass on the target (cleared to `clear` unless `load`) drawing batches `from .. to` of

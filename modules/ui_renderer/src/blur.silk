@@ -343,6 +343,18 @@ impl BlurPyramid {
     )
   }
 
+  /// The bytes of the pyramid's textures.
+  pub fn bytes(self: &Self) -> u64 {
+    let levels = self.levels.asSlice()
+    let mut total: u64 = 0
+    let mut i: usize = 0
+    while i < levels.length {
+      total = total + u32.toU64(levels[i].width) * u32.toU64(levels[i].height) * 4
+      i = i + 1
+    }
+    return total
+  }
+
   /// The texture that holds `blurred`, until the next blur of as many halvings.
   pub fn view(self: &Self, blurred: Blurred) -> &TextureView {
     return &self.levels.asSlice()[blurred.level].view
