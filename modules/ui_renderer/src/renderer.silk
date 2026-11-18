@@ -35,6 +35,7 @@ import silk.num.u8
 import silk.num.usize
 import webgpu.resources as gpu
 import webgpu.resources {
+  Texture,
   Buffer,
   CommandEncoder,
   Queue,
@@ -813,6 +814,15 @@ pub struct UiRenderer {
   rootSlow: bool,
   /// Whether any layer is composited the slow way.
   anySlow: bool,
+  /// Whether this frame draws the root straight onto the target and reads what is under a slow
+  /// layer back from it (see [`UiRenderer.drawReadable`]), instead of drawing the frame into a
+  /// texture of its own first.
+  readsTarget: bool,
+  /// Whether a slow composite of this frame blurs its backdrop too narrowly for the pyramid.
+  narrow: bool,
+  /// The copy of what is under a slow layer on the target, in the target's format, when
+  /// `readsTarget`: one texture, as large as the backdrop copy of the pool.
+  under: List<FilterImage>,
   /// Whether a slow composite of this frame filters through the pool's three scratch textures
   /// (see `scratches`); they stay one pixel large until one does.
   scratch: bool,
@@ -885,6 +895,9 @@ impl UiRenderer {
       assigned: List<u32>.make(),
       rootSlow: false,
       anySlow: false,
+      readsTarget: false,
+      narrow: false,
+      under: List<FilterImage>.make(),
       scratch: false,
       inline: List<u32>.make(),
       transforms: List<u8>.make(),
@@ -1044,6 +1057,7 @@ impl UiRenderer {
           scene,
           atlas,
           target,
+          Option<&'static Texture>.None,
           Surface.Target,
           NO_PAGE,
           true,
@@ -1064,6 +1078,7 @@ impl UiRenderer {
         scene,
         atlas,
         target,
+        Option<&'static Texture>.None,
         Surface.Pool { index: 1 },
         NO_PAGE,
         false,
@@ -1079,6 +1094,7 @@ impl UiRenderer {
         &mut encoder,
         &readyOf(&self.layered).overlay,
         target,
+        false,
         slot,
         OP_COPY,
         0,
@@ -1162,6 +1178,48 @@ impl UiRenderer {
   ) -> ()
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
+    run self.encodeOnto(device, queue, &mut encoder, scene, atlas, target, Option<&'static Texture>.None, width, height, clear)
+  }
+
+  /// [`UiRenderer.draw`] onto a target that can be read back: `texture`, whose view is `target`,
+  /// has `CopySrc` usage. A frame whose root holds a layer composited the slow way is then
+  /// drawn straight onto it, and what is under such a layer is copied from it, where `draw`
+  /// keeps a texture as large as the target for the frame and copies that out at the end.
+  pub effect fn drawReadable(
+    self: &mut Self,
+    device: &Device,
+    queue: &Queue,
+    scene: &Scene,
+    atlas: &GpuAtlas,
+    texture: &Texture,
+    target: &TextureView,
+    width: u32,
+    height: u32,
+    clear: Rgba<f32>,
+  ) -> ()
+    ! GpuError | OutOfMemoryError
+    ? &mut Allocator {
+    let mut encoder = run gpu.createCommandEncoder(device, b"ui frame")
+    run self.encodeOnto(device, queue, &mut encoder, scene, atlas, target, Option.some(texture), width, height, clear)
+    let finished = run encoder.finish(b"ui frame")
+    queue.submit(&[finished.reference()])
+  }
+
+  effect fn encodeOnto(
+    self: &mut Self,
+    device: &Device,
+    queue: &Queue,
+    encoder: &mut CommandEncoder,
+    scene: &Scene,
+    atlas: &GpuAtlas,
+    target: &TextureView,
+    reads: Option<&Texture>,
+    width: u32,
+    height: u32,
+    clear: Rgba<f32>,
+  ) -> ()
+    ! GpuError | OutOfMemoryError
+    ? &mut Allocator {
     if width == 0 || height == 0 {
       return
     }
@@ -1189,11 +1247,13 @@ impl UiRenderer {
     }
     run self.readyAll()
     run self.plan(scene, width, height)
+    // A narrow backdrop blur filters the pool's own copy, so its frame keeps a texture.
+    self.readsTarget = reads.isSome() && self.rootSlow && !self.narrow
     run self.reserve(device, queue, scene, width, height)
     let mut slot: usize = 0
     let mut draws = Draws.make()
     run self.fillPages(device, queue, &mut encoder, scene, atlas, target, width, height, &mut slot, &mut draws)
-    if !self.rootSlow {
+    if !self.rootSlow || self.readsTarget {
       run self.fill(
         device,
         queue,
@@ -1201,6 +1261,7 @@ impl UiRenderer {
         scene,
         atlas,
         target,
+        reads,
         Surface.Target,
         NO_PAGE,
         false,
@@ -1219,6 +1280,7 @@ impl UiRenderer {
       scene,
       atlas,
       target,
+      Option<&'static Texture>.None,
       Surface.Pool { index: 1 },
       NO_PAGE,
       false,
@@ -1234,6 +1296,7 @@ impl UiRenderer {
       &mut encoder,
       &readyOf(&self.layered).copy,
       target,
+      false,
       slot,
       OP_COPY,
       0,
@@ -1476,6 +1539,7 @@ impl UiRenderer {
     self.pyramid.begin()
     if width != self.layerWidth || height != self.layerHeight {
       self.layers.clear()
+      self.under.clear()
       self.pyramid.clear()
       self.pages.clear()
       self.pageIdle.clear()
@@ -1496,7 +1560,7 @@ impl UiRenderer {
       let mut k: usize = 0
       while k < self.layers.length() {
         let unused = !self.scratch && k + 3 >= self.layers.length()
-        if (k != 1 || !self.rootSlow) && !unused {
+        if (k != 1 || !self.rootSlow || self.readsTarget) && !unused {
           let image = &self.layers.asSlice()[k]
           let holds = k != 0 && k + 3 < self.layers.length()
           let w = if holds { holdWidth } else { needWidth }
@@ -1515,7 +1579,7 @@ impl UiRenderer {
       let count = larger(usize.toU32(needed), usize.toU32(self.layers.length()))
       k = 0
       while k < u32.toUsize(count) {
-        let root = k == 1 && self.rootSlow
+        let root = k == 1 && self.rootSlow && !self.readsTarget
         let last = k + 3 >= u32.toUsize(count)
         let spare = !self.scratch && last
         let holds = k != 0 && !last
@@ -1538,6 +1602,18 @@ impl UiRenderer {
           run self.layers.append(move made)
         }
         k = k + 1
+      }
+    }
+    if self.readsTarget {
+      let image = &self.layers.asSlice()[0]
+      let wantWidth = image.width
+      let wantHeight = image.height
+      drop image
+      let fits = self.under.length() == 1 && self.under.asSlice()[0].width == wantWidth
+        && self.under.asSlice()[0].height == wantHeight
+      if !fits {
+        self.under.clear()
+        run self.under.append(run FilterImage.makeIn(device, wantWidth, wantHeight, self.format))
       }
     }
     run self.sizePages(device, queue, width, height)
@@ -1581,6 +1657,7 @@ impl UiRenderer {
     run self.assigned.appendRepeated(NOT_PLANNED, u32.toUsize(scene.layerCount()))
     self.rootSlow = false
     self.anySlow = false
+    self.narrow = false
     self.scratch = false
     self.fullPages = 0
     self.poolWidth = 0
@@ -1817,6 +1894,9 @@ impl UiRenderer {
           if !self.scratch {
             self.scratch = scratches(scene, &sprite)
           }
+          if sprite.effects.backdropBlur > 0.0 && sprite.effects.backdropBlur < FAST_SIGMA {
+            self.narrow = true
+          }
           if layer == 0 {
             self.rootSlow = true
           }
@@ -1941,6 +2021,7 @@ impl UiRenderer {
             scene,
             atlas,
             target,
+            Option<&'static Texture>.None,
             Surface.Page { index: page },
             usize.toU32(page),
             false,
@@ -1968,6 +2049,9 @@ impl UiRenderer {
     scene: &Scene,
     atlas: &GpuAtlas,
     target: &TextureView,
+    /// The target's texture when it can be read back and `surface` is the target (see
+    /// [`UiRenderer.drawReadable`]).
+    reads: Option<&Texture>,
     surface: Surface,
     page: u32,
     load: bool,
@@ -2073,6 +2157,8 @@ impl UiRenderer {
                     atlas,
                     sprite,
                     surface,
+                    Option.some(target),
+                    reads,
                     area,
                     1,
                     origin,
@@ -2187,6 +2273,10 @@ impl UiRenderer {
     atlas: &GpuAtlas,
     sprite: LayerSprite,
     surface: Surface,
+    /// The target's view and, when it can be read back, its texture: for a `surface` that is
+    /// the target.
+    target: Option<&TextureView>,
+    reads: Option<&Texture>,
     area: Area,
     depth: u32,
     within: Area,
@@ -2246,13 +2336,23 @@ impl UiRenderer {
       let mut origin = Origin3D.default()
       origin.setX(from.x)
       origin.setY(from.y)
-      let mut source = TexelCopyTextureInfo.default().withTexture(&self.imageOf(surface).texture)
-      source.setOrigin(origin)
-      let copy = TexelCopyTextureInfo.default().withTexture(&self.layers.asSlice()[0].texture)
-      encoder.copyTextureToTexture(&source, &copy, &extent(from.width, from.height))
-      drop source
-      drop copy
+      match reads {
+        Option.Some { value } => {
+          // Straight from the target, into a copy of its own format.
+          let mut source = TexelCopyTextureInfo.default().withTexture(value)
+          source.setOrigin(origin)
+          let copy = TexelCopyTextureInfo.default().withTexture(&self.under.asSlice()[0].texture)
+          encoder.copyTextureToTexture(&source, &copy, &extent(from.width, from.height))
+        }
+        Option.None => {
+          let mut source = TexelCopyTextureInfo.default().withTexture(&self.imageOf(surface).texture)
+          source.setOrigin(origin)
+          let copy = TexelCopyTextureInfo.default().withTexture(&self.layers.asSlice()[0].texture)
+          encoder.copyTextureToTexture(&source, &copy, &extent(from.width, from.height))
+        }
+      }
     }
+    let onTarget = reads.isSome()
     let content = run self.filterLayer(
       device,
       queue,
@@ -2271,7 +2371,7 @@ impl UiRenderer {
           queue,
           &mut encoder,
           &readyOf(&self.layered).blur,
-          &self.layers.asSlice()[0],
+          if onTarget { &self.under.asSlice()[0] } else { &self.layers.asSlice()[0] },
           0,
           0,
           regions.backdrop.width,
@@ -2288,8 +2388,13 @@ impl UiRenderer {
       device,
       queue,
       &mut encoder,
-      &readyOf(&self.layered).composite,
-      &self.imageOf(surface).view,
+      // The target takes the layer shader for its own format; a layer texture the pool's.
+      if onTarget { &readyOf(&self.layered).copy } else { &readyOf(&self.layered).composite },
+      match target {
+        Option.Some { value } => if onTarget { value } else { &self.imageOf(surface).view }
+        Option.None => &self.imageOf(surface).view
+      },
+      onTarget,
       slot.*,
       OP_COMPOSITE,
       u8ToU32(sprite.isolation.blend),
@@ -2394,6 +2499,8 @@ impl UiRenderer {
               atlas,
               sprite,
               Surface.Pool { index: targetIndex },
+              Option<&'static TextureView>.None,
+              Option<&'static Texture>.None,
               area,
               depth + 1,
               region,
@@ -2650,6 +2757,8 @@ impl UiRenderer {
     encoder: &mut CommandEncoder,
     pipeline: &RenderPipeline,
     output: &TextureView,
+    /// Whether what is under the layer was copied from the target (`under`), not into the pool.
+    onTarget: bool,
     slot: usize,
     op: u32,
     mode: u32,
@@ -2692,8 +2801,9 @@ impl UiRenderer {
     writeU32(&mut header, 176, regions.backdrop.x)
     writeU32(&mut header, 180, regions.backdrop.y)
     let list = self.layers.asSlice()
+    let copied = if onTarget { &self.under.asSlice()[0].view } else { &list[0].view }
     let filtered = match backdrop {
-      Backdrop.Pool { index } => &list[index].view
+      Backdrop.Pool { index } => if onTarget && index == 0 { copied } else { &list[index].view }
       Backdrop.Pyramid { blurred } => {
         writeU32(&mut header, 124, blurred.scale)
         writeU32(&mut header, 184, blurred.width)
@@ -2706,7 +2816,7 @@ impl UiRenderer {
     let layout = run pipeline.getBindGroupLayout(0)
     let entries = [
       entry(0, params),
-      textureEntry(1, &list[0].view),
+      textureEntry(1, copied),
       textureEntry(2, &list[content].view),
       textureEntry(3, filtered),
     ]
