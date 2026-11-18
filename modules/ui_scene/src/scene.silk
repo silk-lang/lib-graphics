@@ -226,9 +226,28 @@ impl<T: Copy> Items<T> {
     run self.keys.appendSlice(other.keys.asSlice())
   }
 
+  /// Takes the sorted lists of `other`, what drawing reads, and leaves the rest empty.
+  effect fn copyDrawnFrom(self: &mut Self, other: &Items<T>) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    self.clear()
+    self.keys.clear()
+    run self.sorted.reserveExact(other.sorted.length())
+    run self.sorted.appendSlice(other.sorted.asSlice())
+    run self.sortedOrders.appendSlice(other.sortedOrders.asSlice())
+    run self.sortedTextures.appendSlice(other.sortedTextures.asSlice())
+    run self.sortedGroups.appendSlice(other.sortedGroups.asSlice())
+  }
+
   effect fn push(self: &mut Self, item: T, order: u32, texture: u32, group: u32) -> u32
     ! OutOfMemoryError
     ? &mut Allocator {
+    if self.added.capacity() == 0 {
+      // A list grows to four items at first. Most layers hold one primitive (a box moved by a
+      // transform is a layer of its own), and a scene of thousands of them keeps that room in
+      // every copy of the frame: the first item takes room for one.
+      run self.added.reserveExact(1)
+    }
     run self.added.reserve(1)
     run self.orders.reserve(1)
     run self.textures.reserve(1)
@@ -273,10 +292,11 @@ impl<T: Copy> Items<T> {
     self.sortedTextures.clear()
     self.sortedGroups.clear()
     let count = self.added.length()
-    run self.sorted.reserve(count)
-    run self.sortedOrders.reserve(count)
-    run self.sortedTextures.reserve(count)
-    run self.sortedGroups.reserve(count)
+    // Exactly: the lists are empty here, so nothing is copied when they are made again.
+    run self.sorted.reserveExact(count)
+    run self.sortedOrders.reserveExact(count)
+    run self.sortedTextures.reserveExact(count)
+    run self.sortedGroups.reserveExact(count)
     let mut i: usize = 0
     while i < count {
       let start = i
@@ -392,6 +412,21 @@ impl LayerData {
     run self.glyphs.copyFrom(&other.glyphs)
     run self.images.copyFrom(&other.images)
     run self.layers.copyFrom(&other.layers)
+    self.batches.clear()
+    run self.batches.appendSlice(other.batches.asSlice())
+  }
+
+  effect fn copyDrawnFrom(self: &mut Self, other: &LayerData) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    self.tree.clear()
+    run self.shadows.copyDrawnFrom(&other.shadows)
+    run self.quads.copyDrawnFrom(&other.quads)
+    run self.paths.copyDrawnFrom(&other.paths)
+    run self.underlines.copyDrawnFrom(&other.underlines)
+    run self.glyphs.copyDrawnFrom(&other.glyphs)
+    run self.images.copyDrawnFrom(&other.images)
+    run self.layers.copyDrawnFrom(&other.layers)
     self.batches.clear()
     run self.batches.appendSlice(other.batches.asSlice())
   }
@@ -731,6 +766,41 @@ impl Scene {
       at = at + 1
     }
     run self.scrollLog.appendSlice(other.scrollLog.asSlice())
+    run self.stops.appendSlice(other.stops.asSlice())
+  }
+
+  /// Makes this scene what a renderer reads of `other`, which is finished: every layer's
+  /// sorted primitives and batches, the masks, the paths' coverage, the scroll groups and
+  /// positions and the gradient stops, reusing this scene's storage. It leaves out what only
+  /// painting on needs (the primitives as added, the order trees, the replay log), so a frame
+  /// handed to a render thread takes about half of a copy. Do not paint into the result.
+  pub effect fn copyDrawnFrom(self: &mut Self, other: &Scene) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    self.clear()
+    while self.layerData.length() < u32.toUsize(other.layersUsed) {
+      run self.layerData.append(LayerData.make())
+    }
+    let mut i: usize = 0
+    while i < u32.toUsize(other.layersUsed) {
+      run self.layerData.asMutSlice()[i].copyDrawnFrom(&other.layerData.asSlice()[i])
+      i = i + 1
+    }
+    self.layersUsed = other.layersUsed
+    run self.masks.appendSlice(other.masks.asSlice())
+    run self.strips.appendSlice(other.strips.asSlice())
+    run self.fills.appendSlice(other.fills.asSlice())
+    run self.alphas.appendSlice(other.alphas.asSlice())
+    run self.groups.appendSlice(other.groups.asSlice())
+    run self.scrollPositions.appendSlice(other.scrollPositions.asSlice())
+    let mut at: usize = 0
+    while at < self.scrollPositions.length() {
+      let node = self.scrollPositions.get(at).node
+      if ScrollIndex.holds(node) && self.scrollIndex.find(node) == usize.MAX {
+        run self.scrollIndex.set(node, at)
+      }
+      at = at + 1
+    }
     run self.stops.appendSlice(other.stops.asSlice())
   }
 
