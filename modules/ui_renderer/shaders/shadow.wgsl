@@ -44,21 +44,15 @@ fn erf2(v: vec2f) -> vec2f {
 }
 
 // How far row `y` (from the center) of a box of half size `half` reaches out from the center on
-// the side of the corner with radii `e`.
-fn reachAt(y: f32, e: vec2f, half: vec2f) -> f32 {
-  if e.x <= 0.0 || e.y <= 0.0 { return half.x; }
-  let delta = min(half.y - e.y - abs(y), 0.0) / e.y;
+// the side of the corner with radii `e`; `inverse` is 1 / e.y, or 0 for a square corner.
+fn reachAt(y: f32, e: vec2f, inverse: f32, half: vec2f) -> f32 {
+  let delta = min(half.y - e.y - abs(y), 0.0) * inverse;
   return half.x - e.x + e.x * sqrt(max(0.0, 1.0 - delta * delta));
 }
 
-// The blurred coverage of one row `y` (from the center) of the rounded box, at `x`.
-// `mirrored` when the left corners match the right ones, so one reach serves both sides.
-fn blurAlongX(x: f32, y: f32, sigma: f32, radii: Radii, half: vec2f, mirrored: bool) -> f32 {
-  let left = reachAt(y, pickRadii(vec2f(-1.0, y), radii), half);
-  var right = left;
-  if !mirrored { right = reachAt(y, pickRadii(vec2f(1.0, y), radii), half); }
-  let integral = 0.5 + 0.5 * erf2((x + vec2f(-right, left)) * (SQRT_HALF / sigma));
-  return integral.y - integral.x;
+// 1 / e.y for a rounded corner with radii `e`, 0 for a square one.
+fn inverseOf(e: vec2f) -> f32 {
+  return select(0.0, 1.0 / e.y, e.x > 0.0 && e.y > 0.0);
 }
 
 @fragment fn fs(v: Varying) -> @location(0) vec4f {
@@ -80,10 +74,26 @@ fn blurAlongX(x: f32, y: f32, sigma: f32, radii: Radii, half: vec2f, mirrored: b
       let end = clamp(3.0 * sigma, q.y - half.y, q.y + half.y);
       let step = (end - start) / f32(SAMPLES);
       var y = start + step * 0.5;
+      // The corners on each side, above and below the center: a row reaches out to the corner
+      // on its side, so each sample takes one reach per side (one when the sides match).
       let r = s.shapeRadii;
       let mirrored = all(r.x.xw == r.x.yz) && all(r.y.xw == r.y.yz);
+      let leftTop = vec2f(r.x.x, r.y.x);
+      let leftBottom = vec2f(r.x.w, r.y.w);
+      let rightTop = vec2f(r.x.y, r.y.y);
+      let rightBottom = vec2f(r.x.z, r.y.z);
+      let inverses = vec4f(inverseOf(leftTop), inverseOf(leftBottom), inverseOf(rightTop), inverseOf(rightBottom));
+      let scale = SQRT_HALF / sigma;
       for (var i = 0; i < SAMPLES; i += 1) {
-        alpha += blurAlongX(q.x, q.y - y, sigma, s.shapeRadii, half, mirrored) * gaussian(y, sigma) * step;
+        let row = q.y - y;
+        let top = row < 0.0;
+        let left = reachAt(row, select(leftBottom, leftTop, top), select(inverses.y, inverses.x, top), half);
+        var right = left;
+        if !mirrored {
+          right = reachAt(row, select(rightBottom, rightTop, top), select(inverses.w, inverses.z, top), half);
+        }
+        let integral = 0.5 + 0.5 * erf2((q.x + vec2f(-right, left)) * scale);
+        alpha += (integral.y - integral.x) * gaussian(y, sigma) * step;
         y += step;
       }
     }
