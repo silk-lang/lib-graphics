@@ -42,6 +42,8 @@ fn ellipseDistance(d: vec2f, e: vec2f) -> f32 {
 // `half`, to that rectangle with the corner there the quarter ellipse with radii `e`.
 fn foldedRectSdf(a: vec2f, half: vec2f, e: vec2f) -> f32 {
   let d = a - (half - e);
+  // Circular and square corners, the common case, take the branch-free circle distance.
+  if e.x == e.y { return min(max(d.x, d.y), 0.0) + length(max(d, vec2f(0.0))) - e.x; }
   if d.x > 0.0 && d.y > 0.0 && e.x > 0.0 && e.y > 0.0 {
     return ellipseDistance(d, e);
   }
@@ -117,6 +119,7 @@ fn corner(p: vec2f) -> f32 {
   if e.x <= 0.0 || e.y <= 0.0 { return 1.0; }
   let d = abs(q) - half + e;
   if d.x <= 0.0 || d.y <= 0.0 { return 1.0; }
+  if e.x == e.y { return clamp(0.5 - (length(d) - e.x), 0.0, 1.0); }
   return clamp(0.5 - ellipseDistance(d, e), 0.0, 1.0);
 }
 

@@ -51,9 +51,11 @@ fn reachAt(y: f32, e: vec2f, half: vec2f) -> f32 {
 }
 
 // The blurred coverage of one row `y` (from the center) of the rounded box, at `x`.
-fn blurAlongX(x: f32, y: f32, sigma: f32, radii: Radii, half: vec2f) -> f32 {
+// `mirrored` when the left corners match the right ones, so one reach serves both sides.
+fn blurAlongX(x: f32, y: f32, sigma: f32, radii: Radii, half: vec2f, mirrored: bool) -> f32 {
   let left = reachAt(y, pickRadii(vec2f(-1.0, y), radii), half);
-  let right = reachAt(y, pickRadii(vec2f(1.0, y), radii), half);
+  var right = left;
+  if !mirrored { right = reachAt(y, pickRadii(vec2f(1.0, y), radii), half); }
   let integral = 0.5 + 0.5 * erf2((x + vec2f(-right, left)) * (SQRT_HALF / sigma));
   return integral.y - integral.x;
 }
@@ -76,8 +78,10 @@ fn blurAlongX(x: f32, y: f32, sigma: f32, radii: Radii, half: vec2f) -> f32 {
       let end = clamp(3.0 * sigma, q.y - half.y, q.y + half.y);
       let step = (end - start) / f32(SAMPLES);
       var y = start + step * 0.5;
+      let r = s.shapeRadii;
+      let mirrored = all(r.x.xw == r.x.yz) && all(r.y.xw == r.y.yz);
       for (var i = 0; i < SAMPLES; i += 1) {
-        alpha += blurAlongX(q.x, q.y - y, sigma, s.shapeRadii, half) * gaussian(y, sigma) * step;
+        alpha += blurAlongX(q.x, q.y - y, sigma, s.shapeRadii, half, mirrored) * gaussian(y, sigma) * step;
         y += step;
       }
     }
