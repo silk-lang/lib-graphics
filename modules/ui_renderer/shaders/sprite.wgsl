@@ -1,4 +1,4 @@
-// Sprite sampling shared by mono.wgsl and poly.wgsl: bilinear at pixel centers, clamped to the
+// Sprite sampling shared by mono.wgsl and poly.wgsl: bilinear (or nearest) at pixel centers, clamped to the
 // tile, read with textureLoad so no texel outside the tile is touched.
 @group(0) @binding(2) var atlas: texture_2d<f32>;
 
@@ -15,6 +15,14 @@ fn sampleTile(tile: vec4f, bounds: vec4f, p: vec2f) -> vec4f {
   let c = textureLoad(atlas, vec2u(tile.xy + vec2f(i0.x, i1.y)), 0);
   let d = textureLoad(atlas, vec2u(tile.xy + i1), 0);
   return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
+}
+
+// The texel of `tile` under pixel center `p`, clamped to the tile: `image-rendering: pixelated`.
+fn nearestTile(tile: vec4f, bounds: vec4f, p: vec2f) -> vec4f {
+  let size = tile.zw - tile.xy;
+  let uv = (p - bounds.xy) * size / (bounds.zw - bounds.xy);
+  let i = clamp(floor(uv), vec2f(0.0), size - 1.0);
+  return textureLoad(atlas, vec2u(tile.xy + i), 0);
 }
 
 struct Varying { @builtin(position) position: vec4f, @location(0) @interpolate(flat) index: u32, @location(1) local: vec2f }

@@ -16,6 +16,11 @@ const EXCLUSION: u32 = 11u;
 const HUE: u32 = 12u;
 const SATURATION: u32 = 13u;
 const COLOR: u32 = 14u;
+// From here on Porter-Duff compositing, as vector.layer composePixel.
+const PLUS_LIGHTER: u32 = 16u;
+const SOURCE_IN: u32 = 17u;
+const SOURCE_OUT: u32 = 18u;
+const XOR: u32 = 19u;
 
 fn div255(x: u32) -> u32 {
   let t = x + 128u;
@@ -87,12 +92,27 @@ fn setSat(c: vec3f, s: f32) -> vec3f {
   return (c - mn) * s / (mx - mn);
 }
 
+fn composed(b: vec4u, s: vec4u, mode: u32) -> vec4u {
+  if mode == PLUS_LIGHTER { return min(s + b, vec4u(255u)); }
+  var fs = 255u - b.w;
+  if mode == SOURCE_IN { fs = b.w; }
+  var fb = 0u;
+  if mode == XOR { fb = 255u - s.w; }
+  let r = vec4u(div255(s.x * fs), div255(s.y * fs), div255(s.z * fs), div255(s.w * fs))
+    + vec4u(div255(b.x * fb), div255(b.y * fb), div255(b.z * fb), div255(b.w * fb));
+  return min(r, vec4u(255u));
+}
+
+// Whether `mode` changes the backdrop under a transparent source pixel.
+fn clearsUnder(mode: u32) -> bool { return mode == SOURCE_IN || mode == SOURCE_OUT; }
+
 // co = cs (1 - ab) + cb (1 - as) + as ab B(Cb, Cs), ao = as + ab (1 - as), on premultiplied bytes.
 fn blend(b: vec4u, s: vec4u, mode: u32) -> vec4u {
   if mode == NORMAL {
     let inverse = 255u - s.w;
     return s + vec4u(div255(b.x * inverse), div255(b.y * inverse), div255(b.z * inverse), div255(b.w * inverse));
   }
+  if mode >= PLUS_LIGHTER { return composed(b, s, mode); }
   let sa = f32(s.w) / 255.0;
   let ba = f32(b.w) / 255.0;
   if sa == 0.0 { return b; }
