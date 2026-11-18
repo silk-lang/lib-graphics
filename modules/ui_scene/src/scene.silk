@@ -44,7 +44,7 @@ import silk.num.usize
 import vector.strips { Fill, Strip }
 import effects { LayerEffects }
 import bounds_tree { BoundsTree }
-import scroll { ScrollGroup, ScrollLink, ScrollPosition, ScrollAxis, ROOT_GROUP }
+import scroll { ScrollGroup, ScrollIndex, ScrollLink, ScrollPosition, ScrollAxis, ROOT_GROUP }
 import color
 import primitives {
   Background,
@@ -616,6 +616,8 @@ pub struct Scene {
   groupTrees: List<BoundsTree>,
   treesUsed: u32,
   scrollPositions: List<ScrollPosition>,
+  /// Where each node's position is in `scrollPositions`.
+  scrollIndex: ScrollIndex,
   /// Every [`Scene.setScroll`] call, for replay.
   scrollLog: List<ScrollPosition>,
   /// The stops of every [`StopsGradient`] in the frame.
@@ -689,6 +691,7 @@ impl Scene {
       groupTrees: List<BoundsTree>.make(),
       treesUsed: 0,
       scrollPositions: List<ScrollPosition>.make(),
+      scrollIndex: ScrollIndex.make(),
       scrollLog: List<ScrollPosition>.make(),
       stops: List<ColorStop>.make(),
     }
@@ -717,7 +720,16 @@ impl Scene {
     run self.fills.appendSlice(other.fills.asSlice())
     run self.alphas.appendSlice(other.alphas.asSlice())
     run self.groups.appendSlice(other.groups.asSlice())
+    let first = self.scrollPositions.length()
     run self.scrollPositions.appendSlice(other.scrollPositions.asSlice())
+    let mut at = first
+    while at < self.scrollPositions.length() {
+      let node = self.scrollPositions.get(at).node
+      if ScrollIndex.holds(node) && self.scrollIndex.find(node) == usize.MAX {
+        run self.scrollIndex.set(node, at)
+      }
+      at = at + 1
+    }
     run self.scrollLog.appendSlice(other.scrollLog.asSlice())
     run self.stops.appendSlice(other.stops.asSlice())
   }
@@ -741,6 +753,7 @@ impl Scene {
     self.groups.clear()
     self.treesUsed = 0
     self.scrollPositions.clear()
+    self.scrollIndex.clear()
     self.scrollLog.clear()
     self.stops.clear()
   }
@@ -1254,6 +1267,16 @@ impl Scene {
     let logged = usize.toU32(self.scrollLog.length())
     run self.scrollLog.append(position)
     run self.log(OP_SCROLL, logged)
+    if ScrollIndex.holds(position.node) {
+      let at = self.scrollIndex.find(position.node)
+      if at != usize.MAX {
+        self.scrollPositions.set(at, position)
+        return
+      }
+      run self.scrollIndex.set(position.node, self.scrollPositions.length())
+      run self.scrollPositions.append(position)
+      return
+    }
     let list = self.scrollPositions.asMutSlice()
     let mut i: usize = 0
     while i < list.length {

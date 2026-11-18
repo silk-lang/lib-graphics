@@ -20,8 +20,9 @@ struct Globals {
 @group(0) @binding(7) var<storage, read> ramps: array<u32>;
 
 // A layer drawn straight onto its parent's surface instead of through a texture: its primitives
-// keep the layer's own pixels and take this to where they land. Entry 0 is unused: a primitive
-// whose transform is 0 is drawn where it lies. Paths do not read it.
+// keep the layer's own pixels and take this to where they land, faded by the layer's opacity.
+// Entry 0 is unused: a primitive whose transform is 0 is drawn where it lies. Paths do not read
+// it.
 struct Transform {
   // Rows of the map from a layer pixel to a scene pixel, `x' = dot(to0.xyz, (x, y, 1))`, and of
   // its inverse.
@@ -34,8 +35,9 @@ struct Transform {
   // where they end.
   clip: vec4f,
   clipRadii: vec4f,
-  unused0: vec4f,
-  unused1: vec4f,
+  // x is the layer's opacity; the rest is unused.
+  more: vec4f,
+  unused: vec4f,
 }
 @group(0) @binding(8) var<storage, read> transforms: array<Transform>;
 
@@ -84,7 +86,7 @@ fn spot(position: vec4f, local: vec2f, transform: u32) -> Spot {
   if transform == 0u { return Spot(device, vec2f(1.0), 1.0); }
   let t = transforms[transform];
   let scale = vec2f(length(vec2f(t.to0.x, t.to1.x)), length(vec2f(t.to0.y, t.to1.y)));
-  let keep = areaIn(t.clip, device) * cornerCoverage(t.clip, t.clipRadii, device);
+  let keep = areaIn(t.clip, device) * cornerCoverage(t.clip, t.clipRadii, device) * t.more.x;
   return Spot(local, scale, keep);
 }
 

@@ -618,9 +618,13 @@ fn plain(sprite: &LayerSprite) -> bool {
 fn inlines(scene: &Scene, sprite: &LayerSprite) -> bool {
   let m = sprite.transform.values
   let det = m[0] * m[4] - m[3] * m[1]
-  return sprite.transformed() && m[2] == 0.0 && m[5] == 0.0 && m[8] == 1.0
+  let held = scene.quads(sprite.layer).length + scene.shadows(sprite.layer).length
+    + scene.underlines(sprite.layer).length + scene.glyphs(sprite.layer).length
+    + scene.images(sprite.layer).length
+  // One primitive fades as the layer would; several would show through each other.
+  return m[2] == 0.0 && m[5] == 0.0 && m[8] == 1.0
     && f32.abs(det) > 0.000001
-    && plain(sprite) && sprite.isolation.opacity >= 1.0
+    && plain(sprite) && (sprite.isolation.opacity >= 1.0 || held == 1)
     && scene.maskOf(sprite.layer) == NO_MASK
     && scene.layers(sprite.layer).length == 0
     && scene.paths(sprite.layer).length == 0
@@ -1304,9 +1308,9 @@ impl UiRenderer {
 
   /// Finds the layers of `scene` that are drawn straight onto their parent's surface, through
   /// a `Transform`, and writes those. Such a layer costs no texture and no pass, and its
-  /// primitives join the frame's instanced draws: it is a layer moved by an affine transform
-  /// that needs nothing else of a texture (no opacity, mask, blend or filter) and holds only
-  /// primitives the shaders can transform, so no layer and no path.
+  /// primitives join the frame's instanced draws: it is a layer that needs nothing of a texture
+  /// but an affine transform (no mask, blend or filter, and an opacity only when it holds one
+  /// primitive) and holds only primitives the shaders can transform, so no layer and no path.
   effect fn planInline(self: &mut Self, scene: &Scene) -> ()
     ! OutOfMemoryError
     ? &mut Allocator {
@@ -1333,7 +1337,7 @@ impl UiRenderer {
             -m[1] / det, m[0] / det, (m[1] * m[6] - m[0] * m[7]) / det, 0.0,
             c.bounds.xMin, c.bounds.yMin, c.bounds.xMax, c.bounds.yMax,
             c.radii.topLeft, c.radii.topRight, c.radii.bottomRight, c.radii.bottomLeft,
-            0.0, 0.0, 0.0, 0.0,
+            f32.max(f32.min(sprite.isolation.opacity, 1.0), 0.0), 0.0, 0.0, 0.0,
             0.0, 0.0, 0.0, 0.0,
           ]
           let start = self.transforms.length()
