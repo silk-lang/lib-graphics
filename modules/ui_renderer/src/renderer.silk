@@ -772,6 +772,10 @@ pub struct UiRenderer {
   /// The size the pool textures other than the root need this frame (see `plan`).
   poolWidth: u32,
   poolHeight: u32,
+  /// The size the textures that hold a composite's content (2 and up) need this frame: the
+  /// largest content region, which a backdrop blur's reach does not grow.
+  contentWidth: u32,
+  contentHeight: u32,
   /// How many frames in a row the pool has been more than four times larger than it needs.
   poolSlack: u32,
   /// The globals uniform of each slow layer's content of a frame, whose `origin` is the content's.
@@ -860,6 +864,8 @@ impl UiRenderer {
       layers: List<FilterImage>.make(),
       poolWidth: 0,
       poolHeight: 0,
+      contentWidth: 0,
+      contentHeight: 0,
       poolSlack: 0,
       regionGlobals: List<Buffer>.make(),
       regionCount: 0,
@@ -1482,15 +1488,21 @@ impl UiRenderer {
       let needed = u32.toUsize(depthOf(scene, 0)) + 5
       let needWidth = larger(self.poolWidth, 1)
       let needHeight = larger(self.poolHeight, 1)
+      // The backdrop copy (0) and the scratch textures hold a composite's backdrop, grown by a
+      // blur's reach; the textures between hold only its content.
+      let holdWidth = larger(self.contentWidth, 1)
+      let holdHeight = larger(self.contentHeight, 1)
       let mut oversized = self.layers.length() > 0
       let mut k: usize = 0
       while k < self.layers.length() {
         let unused = !self.scratch && k + 3 >= self.layers.length()
         if (k != 1 || !self.rootSlow) && !unused {
           let image = &self.layers.asSlice()[k]
+          let holds = k != 0 && k + 3 < self.layers.length()
+          let w = if holds { holdWidth } else { needWidth }
+          let h = if holds { holdHeight } else { needHeight }
           oversized = oversized
-            && u32.toU64(image.width) * u32.toU64(image.height)
-              > 4 * u32.toU64(needWidth) * u32.toU64(needHeight)
+            && u32.toU64(image.width) * u32.toU64(image.height) > 4 * u32.toU64(w) * u32.toU64(h)
         }
         k = k + 1
       }
@@ -1504,9 +1516,11 @@ impl UiRenderer {
       k = 0
       while k < u32.toUsize(count) {
         let root = k == 1 && self.rootSlow
-        let spare = !self.scratch && k + 3 >= u32.toUsize(count)
-        let wantWidth = if root { width } else if spare { 1 } else { needWidth }
-        let wantHeight = if root { height } else if spare { 1 } else { needHeight }
+        let last = k + 3 >= u32.toUsize(count)
+        let spare = !self.scratch && last
+        let holds = k != 0 && !last
+        let wantWidth = if root { width } else if spare { 1 } else if holds { holdWidth } else { needWidth }
+        let wantHeight = if root { height } else if spare { 1 } else if holds { holdHeight } else { needHeight }
         if k < self.layers.length() {
           let image = &self.layers.asSlice()[k]
           let small = image.width < wantWidth || image.height < wantHeight
@@ -1571,6 +1585,8 @@ impl UiRenderer {
     self.fullPages = 0
     self.poolWidth = 0
     self.poolHeight = 0
+    self.contentWidth = 0
+    self.contentHeight = 0
     run self.planLayer(scene, 0, 0, NO_PAGE, Area { x: 0, y: 0, width: width, height: height }, width, height)
   }
 
@@ -1810,6 +1826,8 @@ impl UiRenderer {
           let regions = regionsOf(&sprite, &area, &all, width, height)
           self.poolWidth = larger(self.poolWidth, larger(regions.content.width, regions.backdrop.width))
           self.poolHeight = larger(self.poolHeight, larger(regions.content.height, regions.backdrop.height))
+          self.contentWidth = larger(self.contentWidth, regions.content.width)
+          self.contentHeight = larger(self.contentHeight, regions.content.height)
         }
       }
       i = i + 1
@@ -2181,9 +2199,11 @@ impl UiRenderer {
     ? &mut Allocator {
     let mut regions = regionsOf(&sprite, &area, &within, width, height)
     // Never past the pool's textures, should a frame need more than `plan` saw.
+    let held = &self.layers.asSlice()[u32.toUsize(depth) + 1]
+    regions.content = fitted(regions.content, held.width, held.height)
+    drop held
     let poolWidth = self.layers.asSlice()[0].width
     let poolHeight = self.layers.asSlice()[0].height
-    regions.content = fitted(regions.content, poolWidth, poolHeight)
     regions.backdrop = fitted(regions.backdrop, poolWidth, poolHeight)
     let transparent = clearOf(Rgba<f32>.new(0.0, 0.0, 0.0, 0.0))
     run self.isolated(
