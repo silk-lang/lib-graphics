@@ -1,5 +1,6 @@
 import text
 import atlas_textures
+import blur
 import instances
 import renderer
 import generated_shaders

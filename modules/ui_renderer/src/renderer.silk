@@ -72,6 +72,7 @@ import ui_scene.primitives { ContentMask, LayerSprite }
 import ui_scene.scene { PrimitiveKind, Scene, NO_MASK }
 import ui_scene.scroll { Placements, ScrollPosition }
 import atlas_textures { GpuAtlas }
+import blur { BlurPyramid, Blurred, FAST_SIGMA }
 import instances {
   Instances,
   MONO_BYTES,
@@ -274,6 +275,8 @@ struct Layered {
   overlay: RenderPipeline,
   /// Blends a plain layer onto a layer texture.
   blit: RenderPipeline,
+  /// The passes of `shaders/blur.wgsl`.
+  blur: RenderPipeline,
 }
 
 /// [`Layered`] being made.
@@ -283,6 +286,7 @@ struct MakingLayered {
   copy: Making,
   overlay: Making,
   blit: Making,
+  blur: Making,
 }
 
 /// The renderer's pipelines, made the first time a frame needs them.
@@ -636,6 +640,16 @@ union Surface {
 
 impl Copy for Surface {}
 
+/// Where a composite reads the blurred backdrop.
+union Backdrop {
+  /// `UiRenderer.layers[index]`, at the backdrop copy's size.
+  Pool { index: usize },
+  /// An image of `UiRenderer.pyramid`, to scale back up.
+  Pyramid { blurred: Blurred },
+}
+
+impl Copy for Backdrop {}
+
 effect fn beginPass<'e>(
   encoder: &'e mut CommandEncoder,
   view: &TextureView,
@@ -682,6 +696,8 @@ pub struct UiRenderer {
   /// How many of `regionGlobals` this frame has used.
   regionCount: usize,
   filters: List<FilterRenderer>,
+  /// The halved images of this frame's wide blurs (see `blur`).
+  pyramid: BlurPyramid,
   layerWidth: u32,
   layerHeight: u32,
   /// The textures plain layers share (see `plan`). A page covers only the pixels its layers
@@ -730,6 +746,7 @@ impl UiRenderer {
       path: run gpu.createShaderModule(device, b"ui path", shaders.path()),
     }
     let layer = run gpu.createShaderModule(device, b"ui layer", shaders.layer())
+    let blur = run gpu.createShaderModule(device, b"ui blur", shaders.blur())
     // Natively all of them compile at once on Dawn's worker threads, the ones a plain frame
     // draws with first; nothing waits for them here (see `Making`).
     let direct = run startPipelines(device, &modules, format)
@@ -739,6 +756,7 @@ impl UiRenderer {
       copy: run startPipeline(device, &layer, format, false),
       overlay: run startPipeline(device, &layer, format, true),
       blit: run startPipeline(device, &layer, LAYER_FORMAT, true),
+      blur: run startPipeline(device, &blur, LAYER_FORMAT, false),
     }
     return UiRenderer {
       format: format,
@@ -755,6 +773,7 @@ impl UiRenderer {
       regionGlobals: List<Buffer>.make(),
       regionCount: 0,
       filters: List<FilterRenderer>.make(),
+      pyramid: BlurPyramid.make(),
       layerWidth: 0,
       layerHeight: 0,
       pages: List<FilterImage>.make(),
@@ -801,6 +820,7 @@ impl UiRenderer {
             copy: run finishPipeline(move making.copy),
             overlay: run finishPipeline(move making.overlay),
             blit: run finishPipeline(move making.blit),
+            blur: run finishPipeline(move making.blur),
           },
         }
       }
@@ -942,7 +962,7 @@ impl UiRenderer {
         0,
         255,
         1,
-        0,
+        Backdrop.Pool { index: 0 },
         LayerEffects.none(),
         Mapping.none(),
         Area { x: 0, y: 0, width: width, height: height },
@@ -1098,7 +1118,7 @@ impl UiRenderer {
       0,
       255,
       1,
-      0,
+      Backdrop.Pool { index: 0 },
       LayerEffects.none(),
       Mapping.none(),
       Area { x: 0, y: 0, width: width, height: height },
@@ -1247,8 +1267,10 @@ impl UiRenderer {
       run self.filters.append(run FilterRenderer.make(device, queue))
     }
     self.filters.asMutSlice()[0].reset()
+    self.pyramid.begin()
     if width != self.layerWidth || height != self.layerHeight {
       self.layers.clear()
+      self.pyramid.clear()
       self.pages.clear()
       self.pageIdle.clear()
       self.pageGlobals.clear()
@@ -1964,6 +1986,27 @@ impl UiRenderer {
       mask != NO_MASK,
       &regions,
     )
+    // A wide backdrop blur goes through the pyramid, which the composite scales back up.
+    let mut backdrop = Backdrop.Pool { index: 0 }
+    if sprite.effects.backdropBlur >= FAST_SIGMA {
+      backdrop = Backdrop.Pyramid {
+        blurred: run self.pyramid.blur(
+          device,
+          queue,
+          &mut encoder,
+          &readyOf(&self.layered).blur,
+          &self.layers.asSlice()[0],
+          0,
+          0,
+          regions.backdrop.width,
+          regions.backdrop.height,
+          sprite.effects.backdropBlur,
+          true,
+        ),
+      }
+    } else if sprite.effects.backdropBlur > 0.0 {
+      backdrop = Backdrop.Pool { index: self.layers.length() - 2 }
+    }
     let opacity = f32.toU32(f32.max(f32.min(sprite.isolation.opacity, 1.0), 0.0) * 255.0 + 0.5)
     run self.pass(
       device,
@@ -1976,11 +2019,7 @@ impl UiRenderer {
       u8ToU32(sprite.isolation.blend),
       opacity,
       content,
-      if sprite.effects.backdropBlur > 0.0 {
-        self.layers.length() - 2
-      } else {
-        0
-      },
+      backdrop,
       sprite.effects,
       Mapping.of(&sprite),
       area,
@@ -2114,8 +2153,37 @@ impl UiRenderer {
     let region = Region.make(local.x, local.y, local.x + local.width, local.y + local.height)
     let images = self.layers.asSlice()
     let filter = &mut self.filters.asMutSlice()[0]
+    let pyramid = &mut self.pyramid
+    let pipeline = &readyOf(&self.layered).blur
     let mut content = source
-    if effects.blur > 0.0 {
+    if effects.blur >= FAST_SIGMA {
+      let blurred = run pyramid.blur(
+        device,
+        queue,
+        &mut encoder,
+        pipeline,
+        &images[source],
+        local.x,
+        local.y,
+        local.width,
+        local.height,
+        effects.blur,
+        false,
+      )
+      run pyramid.grow(
+        device,
+        queue,
+        &mut encoder,
+        pipeline,
+        &images[scratch],
+        blurred,
+        local.x,
+        local.y,
+        local.width,
+        local.height,
+      )
+      content = scratch
+    } else if effects.blur > 0.0 {
       let plan = run BlurPlan.make(f32.toF64(effects.blur))
       run filter.gaussianBlur(
         device,
@@ -2164,18 +2232,46 @@ impl UiRenderer {
         let a = free[0]
         let b = free[1]
         if effects.shadow.sigma > 0.0 {
-          let plan = run BlurPlan.make(f32.toF64(effects.shadow.sigma))
-          run filter.gaussianBlur(
-            device,
-            queue,
-            &mut encoder,
-            &images[a],
-            &images[content],
-            &images[free[2]],
-            &plan,
-            &plan,
-            region,
-          )
+          if effects.shadow.sigma >= FAST_SIGMA {
+            let blurred = run pyramid.blur(
+              device,
+              queue,
+              &mut encoder,
+              pipeline,
+              &images[content],
+              local.x,
+              local.y,
+              local.width,
+              local.height,
+              effects.shadow.sigma,
+              false,
+            )
+            run pyramid.grow(
+              device,
+              queue,
+              &mut encoder,
+              pipeline,
+              &images[a],
+              blurred,
+              local.x,
+              local.y,
+              local.width,
+              local.height,
+            )
+          } else {
+            let plan = run BlurPlan.make(f32.toF64(effects.shadow.sigma))
+            run filter.gaussianBlur(
+              device,
+              queue,
+              &mut encoder,
+              &images[a],
+              &images[content],
+              &images[free[2]],
+              &plan,
+              &plan,
+              region,
+            )
+          }
           run filter.colorMatrix(
             device,
             queue,
@@ -2225,13 +2321,14 @@ impl UiRenderer {
         )
         content = a
       }
-      // The backdrop blur below writes the last two pool textures.
-      if effects.backdropBlur > 0.0 && content != source && content != scratch {
+      // A narrow backdrop blur below writes the last two pool textures.
+      if effects.backdropBlur > 0.0 && effects.backdropBlur < FAST_SIGMA && content != source && content != scratch {
         run filter.copy(device, queue, &mut encoder, &images[source], &images[content], region)
         content = source
       }
     }
-    if effects.backdropBlur > 0.0 {
+    // `slow` blurs a wide backdrop blur itself, through the pyramid.
+    if effects.backdropBlur > 0.0 && effects.backdropBlur < FAST_SIGMA {
       let plan = run BlurPlan.make(f32.toF64(effects.backdropBlur))
       run filter.gaussianBlur(
         device,
@@ -2262,7 +2359,7 @@ impl UiRenderer {
     mode: u32,
     opacity: u32,
     content: usize,
-    backdropContent: usize,
+    backdrop: Backdrop,
     effects: LayerEffects,
     mapping: Mapping,
     area: Area,
@@ -2298,15 +2395,24 @@ impl UiRenderer {
     writeU32(&mut header, 172, regions.content.y)
     writeU32(&mut header, 176, regions.backdrop.x)
     writeU32(&mut header, 180, regions.backdrop.y)
+    let list = self.layers.asSlice()
+    let filtered = match backdrop {
+      Backdrop.Pool { index } => &list[index].view
+      Backdrop.Pyramid { blurred } => {
+        writeU32(&mut header, 124, blurred.scale)
+        writeU32(&mut header, 184, blurred.width)
+        writeU32(&mut header, 188, blurred.height)
+        self.pyramid.view(blurred)
+      }
+    }
     let params = &self.params.asSlice()[slot]
     queue.writeBuffer(params, 0, &header)
-    let list = self.layers.asSlice()
     let layout = run pipeline.getBindGroupLayout(0)
     let entries = [
       entry(0, params),
       textureEntry(1, &list[0].view),
       textureEntry(2, &list[content].view),
-      textureEntry(3, &list[backdropContent].view),
+      textureEntry(3, filtered),
     ]
     let group = run gpu.createBindGroup(
       device,

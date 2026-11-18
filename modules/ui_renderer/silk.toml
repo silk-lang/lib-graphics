@@ -4,7 +4,7 @@ description = "Draws a finished UI scene with WebGPU, natively and in the browse
 version = "0.1.0"
 silk-version = "0.1.0-dev.74+205aea3f5b2e"
 kind = "library"
-exports = ["text", "atlas_textures", "instances", "renderer", "generated_shaders", "readback", "compare"]
+exports = ["text", "atlas_textures", "blur", "instances", "renderer", "generated_shaders", "readback", "compare"]
 
 [dependencies]
 vector = { path = "../vector", package = "graphics-vector" }
