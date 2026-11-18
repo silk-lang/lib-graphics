@@ -832,6 +832,10 @@ impl Scene {
     return self.context().group
   }
 
+  /// The scroll group primitives added now join, an index of [`Scene.scrollGroups`]: a painter
+  /// walks its parents to undo their scrolling, as `background-attachment: fixed` does.
+  pub fn openGroup(self: &Self) -> u32 { return self.context().group }
+
   effect fn log(self: &mut Self, kind: u32, index: u32) -> ()
     ! OutOfMemoryError
     ? &mut Allocator {
