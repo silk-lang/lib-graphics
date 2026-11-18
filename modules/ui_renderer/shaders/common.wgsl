@@ -19,6 +19,26 @@ struct Globals {
 // Gradient ramps, 256 premultiplied RGBA8 words each. Only quads and paths read it.
 @group(0) @binding(7) var<storage, read> ramps: array<u32>;
 
+// A layer drawn straight onto its parent's surface instead of through a texture: its primitives
+// keep the layer's own pixels and take this to where they land. Entry 0 is unused: a primitive
+// whose transform is 0 is drawn where it lies. Paths do not read it.
+struct Transform {
+  // Rows of the map from a layer pixel to a scene pixel, `x' = dot(to0.xyz, (x, y, 1))`, and of
+  // its inverse.
+  to0: vec4f,
+  to1: vec4f,
+  from0: vec4f,
+  from1: vec4f,
+  // The scene pixels the layer may touch and their corner radii: the content mask it lands in.
+  // A texture would also cut the layer to the pixels it holds; drawn here, its primitives end
+  // where they end.
+  clip: vec4f,
+  clipRadii: vec4f,
+  unused0: vec4f,
+  unused1: vec4f,
+}
+@group(0) @binding(8) var<storage, read> transforms: array<Transform>;
+
 const CORNERS = array<vec2f, 6>(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0), vec2f(0.0, 1.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0));
 
 // Clip space for corner `index` of the pixel rectangle `r` (xMin, yMin, xMax, yMax).
@@ -38,12 +58,58 @@ fn cover(bounds: vec4f, mask: vec4f) -> vec4f {
   return vec4f(lo, max(hi, lo));
 }
 
+// A corner of a primitive: its clip space position and, for a transformed one, its layer pixel.
+struct Placed { position: vec4f, local: vec2f }
+
+// Corner `index` of a primitive that draws `bounds` under `mask` through transform `transform`.
+fn place(bounds: vec4f, mask: vec4f, transform: u32, index: u32) -> Placed {
+  if transform == 0u { return Placed(corner(cover(bounds, mask), index), vec2f(0.0)); }
+  let t = transforms[transform];
+  // The layer pixels it touches, wider by what one device pixel spans for the edges' ramps.
+  let lo = max(bounds.xy, mask.xy);
+  let hi = max(min(bounds.zw, mask.zw), lo);
+  let margin = vec2f(abs(t.from0.x) + abs(t.from0.y), abs(t.from1.x) + abs(t.from1.y));
+  let local = mix(lo - margin, hi + margin, CORNERS[index]);
+  let p = vec2f(dot(t.to0.xyz, vec3f(local, 1.0)), dot(t.to1.xyz, vec3f(local, 1.0))) - globals.origin.xy;
+  return Placed(vec4f(p.x / globals.size.x * 2.0 - 1.0, 1.0 - p.y / globals.size.y * 2.0, 0.0, 1.0), local);
+}
+
+// A fragment of a primitive: `p` is its center in the primitive's own pixels (scene pixels, or
+// the layer's for a transformed one), `scale` the device pixels one of those spans along x and
+// along y, and `keep` how much of the pixel the transform's clip keeps.
+struct Spot { p: vec2f, scale: vec2f, keep: f32 }
+
+fn spot(position: vec4f, local: vec2f, transform: u32) -> Spot {
+  let device = position.xy + globals.origin.xy;
+  if transform == 0u { return Spot(device, vec2f(1.0), 1.0); }
+  let t = transforms[transform];
+  let scale = vec2f(length(vec2f(t.to0.x, t.to1.x)), length(vec2f(t.to0.y, t.to1.y)));
+  let keep = areaIn(t.clip, device) * cornerCoverage(t.clip, t.clipRadii, device);
+  return Spot(local, scale, keep);
+}
+
 // How much of the pixel square around `p` (a pixel center) lies in `r`, as the CPU reference clips.
 fn areaIn(r: vec4f, p: vec2f) -> f32 {
   let lo = max(p - 0.5, r.xy);
   let hi = min(p + 0.5, r.zw);
   let d = clamp(hi - lo, vec2f(0.0), vec2f(1.0));
   return d.x * d.y;
+}
+
+// `areaIn` where a pixel of `r` spans `scale` device pixels: the device pixel around `p` is
+// `1 / scale` of them wide.
+fn areaInAt(r: vec4f, p: vec2f, scale: vec2f) -> f32 {
+  let half = 0.5 / scale;
+  let lo = max(p - half, r.xy);
+  let hi = min(p + half, r.zw);
+  let d = clamp((hi - lo) * scale, vec2f(0.0), vec2f(1.0));
+  return d.x * d.y;
+}
+
+// The device pixels in one pixel of a shape along its outward normal `n`, where the shape's
+// pixels span `scale` device pixels.
+fn along(n: vec2f, scale: vec2f) -> f32 {
+  return 1.0 / max(length(n / scale), 0.000001);
 }
 
 // The radius of the corner of quadrant `q` (from the center): top-left, top-right, bottom-right,
@@ -70,6 +136,11 @@ fn roundedRectSdf(p: vec2f, r: vec4f, radii: vec4f) -> f32 {
 // How much of the pixel centered at `p` the rounded corners `radii` of content mask `r` keep: 1
 // away from the corners, so the rectangle stays `areaIn`'s. Matches ContentMask.cornerCoverage.
 fn cornerCoverage(r: vec4f, radii: vec4f, p: vec2f) -> f32 {
+  return cornerCoverageAt(r, radii, p, vec2f(1.0));
+}
+
+// `cornerCoverage` where a pixel of `r` spans `scale` device pixels.
+fn cornerCoverageAt(r: vec4f, radii: vec4f, p: vec2f, scale: vec2f) -> f32 {
   if max(max(radii.x, radii.y), max(radii.z, radii.w)) <= 0.0 { return 1.0; }
   let half = (r.zw - r.xy) * 0.5;
   let q = p - (r.xy + half);
@@ -77,7 +148,22 @@ fn cornerCoverage(r: vec4f, radii: vec4f, p: vec2f) -> f32 {
   if radius <= 0.0 { return 1.0; }
   let d = abs(q) - half + radius;
   if d.x <= 0.0 || d.y <= 0.0 { return 1.0; }
-  return clamp(0.5 - (length(d) - radius), 0.0, 1.0);
+  if scale.x == 1.0 && scale.y == 1.0 { return clamp(0.5 - (length(d) - radius), 0.0, 1.0); }
+  return clamp(0.5 - (length(d) - radius) * along(normalize(d), scale), 0.0, 1.0);
+}
+
+// Coverage of the pixel at `p` by rectangle `r` with circular corners `radii`, where a pixel
+// of `r` spans `scale` device pixels: `coverage(roundedRectSdf(p, r, radii))` at scale 1.
+fn roundedCoverage(p: vec2f, r: vec4f, radii: vec4f, scale: vec2f) -> f32 {
+  let distance = roundedRectSdf(p, r, radii);
+  if scale.x == 1.0 && scale.y == 1.0 { return coverage(distance); }
+  let half = (r.zw - r.xy) * 0.5;
+  let q = p - (r.xy + half);
+  let radius = clamp(pickRadius(q, radii), 0.0, max(min(half.x, half.y), 0.0));
+  let d = abs(q) - half + radius;
+  var n = vec2f(0.0, 1.0);
+  if d.x > 0.0 && d.y > 0.0 { n = normalize(d); } else if d.x > d.y { n = vec2f(1.0, 0.0); }
+  return coverage(distance * along(n, scale));
 }
 
 // Signed distance from `p` to rectangle `r` whose corner in `p`'s quadrant is the quarter
