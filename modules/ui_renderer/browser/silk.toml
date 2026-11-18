@@ -11,5 +11,5 @@ ui_scene = { path = "../../ui_scene", package = "graphics-ui-scene" }
 ui_renderer = { path = "..", package = "graphics-ui-renderer" }
 ui_fixtures = { path = "../fixtures", package = "graphics-ui-renderer-fixtures" }
 gpu_scene = { path = "../../gpu_scene", package = "graphics-gpu-scene" }
-webgpu = { git = "https://github.com/silk-lang/lib-native.git", rev = "a715a91a4e139d4d9dfab0f9d0a05e17e2a07548", path = "modules/gpu/webgpu", package = "gpu-webgpu" }
-webgpu_sys = { git = "https://github.com/silk-lang/lib-native.git", rev = "a715a91a4e139d4d9dfab0f9d0a05e17e2a07548", path = "modules/gpu/webgpu/sys", package = "gpu-webgpu-sys" }
+webgpu = { git = "https://github.com/silk-lang/lib-native.git", rev = "ba018626769f673eef024abfe9c2bf1a6987d80e", path = "modules/gpu/webgpu", package = "gpu-webgpu" }
+webgpu_sys = { git = "https://github.com/silk-lang/lib-native.git", rev = "ba018626769f673eef024abfe9c2bf1a6987d80e", path = "modules/gpu/webgpu/sys", package = "gpu-webgpu-sys" }
