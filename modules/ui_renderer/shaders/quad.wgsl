@@ -2,14 +2,13 @@
 struct Quad {
   bounds: vec4f,
   mask: vec4f,
-  // top-left, top-right, bottom-right, bottom-left
-  radii: vec4f,
+  radii: Radii,
   // top, right, bottom, left
   borders: vec4f,
   // straight alpha; `paint.kind.z` is 1 for a dashed border
   borderColor: vec4f,
   paint: Paint,
-  maskRadii: vec4f,
+  maskRadii: Radii,
 }
 @group(0) @binding(1) var<storage, read> quads: array<Quad>;
 
@@ -21,11 +20,6 @@ struct Varying { @builtin(position) position: vec4f, @location(0) @interpolate(f
 }
 
 const PI: f32 = 3.141592653589793;
-
-fn clampedRadii(r: vec4f, radii: vec4f) -> vec4f {
-  let limit = max(min(r.z - r.x, r.w - r.y) * 0.5, 0.0);
-  return clamp(radii, vec4f(0.0), vec4f(limit));
-}
 
 // A quarter of an ellipse's perimeter (Ramanujan).
 fn quarterArc(e: vec2f) -> f32 {
@@ -95,23 +89,21 @@ fn dashCoverage(s: f32, w: f32) -> f32 {
   let p = v.position.xy + globals.origin.xy;
   let clip = areaIn(q.mask, p) * cornerCoverage(q.mask, q.maskRadii, p);
   if clip <= 0.0 { discard; }
-  let radii = clampedRadii(q.bounds, q.radii);
+  let radii = q.radii;
   let outer = coverage(roundedRectSdf(p, q.bounds, radii));
   let background = shade(q.paint, p) * outer;
 
   var border = vec4f(0.0);
   let w = q.borders;
   if q.borderColor.a > 0.0 && max(max(w.x, w.y), max(w.z, w.w)) > 0.0 {
-    // The band between the outline and the inner outline inset by the widths, whose corners are
-    // elliptical with radii (r - left or right, r - top or bottom).
+    // The band between the outline and the inner outline inset by the widths, whose corners have
+    // radii (rx - left or right, ry - top or bottom), as CSS's padding edge.
     let inner = vec4f(q.bounds.x + w.w, q.bounds.y + w.x, q.bounds.z - w.y, q.bounds.w - w.z);
     var inside = 0.0;
     if inner.x < inner.z && inner.y < inner.w {
       let c = p - (inner.xy + inner.zw) * 0.5;
-      var e = vec2f(radii.x - w.w, radii.x - w.x);
-      if c.x >= 0.0 && c.y < 0.0 { e = vec2f(radii.y - w.y, radii.y - w.x); }
-      if c.x >= 0.0 && c.y >= 0.0 { e = vec2f(radii.z - w.y, radii.z - w.z); }
-      if c.x < 0.0 && c.y >= 0.0 { e = vec2f(radii.w - w.w, radii.w - w.z); }
+      let sides = vec2f(select(w.y, w.w, c.x < 0.0), select(w.z, w.x, c.y < 0.0));
+      let e = pickRadii(c, radii) - sides;
       inside = coverage(ellipticRectSdf(p, inner, max(e, vec2f(0.0))));
     }
     var band = max(outer - inside, 0.0);
@@ -119,10 +111,10 @@ fn dashCoverage(s: f32, w: f32) -> f32 {
       // Dashes along the band's center line, as long as twice the widest edge.
       let widest = max(max(w.x, w.y), max(w.z, w.w));
       let mid = vec4f(q.bounds.x + w.w * 0.5, q.bounds.y + w.x * 0.5, q.bounds.z - w.y * 0.5, q.bounds.w - w.z * 0.5);
-      let tl = max(vec2f(radii.x - w.w * 0.5, radii.x - w.x * 0.5), vec2f(0.0));
-      let tr = max(vec2f(radii.y - w.y * 0.5, radii.y - w.x * 0.5), vec2f(0.0));
-      let br = max(vec2f(radii.z - w.y * 0.5, radii.z - w.z * 0.5), vec2f(0.0));
-      let bl = max(vec2f(radii.w - w.w * 0.5, radii.w - w.z * 0.5), vec2f(0.0));
+      let tl = max(vec2f(radii.x.x - w.w * 0.5, radii.y.x - w.x * 0.5), vec2f(0.0));
+      let tr = max(vec2f(radii.x.y - w.y * 0.5, radii.y.y - w.x * 0.5), vec2f(0.0));
+      let br = max(vec2f(radii.x.z - w.y * 0.5, radii.y.z - w.z * 0.5), vec2f(0.0));
+      let bl = max(vec2f(radii.x.w - w.w * 0.5, radii.y.w - w.z * 0.5), vec2f(0.0));
       band = band * dashCoverage(perimeterPosition(p, mid, tl, tr, br, bl), widest);
     }
     border = premultiply(q.borderColor) * band;

@@ -5,10 +5,10 @@ struct PolySprite {
   mask: vec4f,
   tile: vec4f,
   clipBounds: vec4f,
-  radii: vec4f,
+  radii: Radii,
   // opacity, grayscale (1 or 0)
   params: vec4f,
-  maskRadii: vec4f,
+  maskRadii: Radii,
 }
 @group(0) @binding(1) var<storage, read> sprites: array<PolySprite>;
 
@@ -19,7 +19,8 @@ fn cameraSprite(source: PolySprite) -> PolySprite {
   s.bounds = source.bounds * camera.x + translation;
   s.mask = source.mask * camera.x + translation;
   s.clipBounds = source.clipBounds * camera.x + translation;
-  s.radii = source.radii * camera.x;
+  s.radii = Radii(source.radii.x * camera.x, source.radii.y * camera.x);
+  s.maskRadii = Radii(source.maskRadii.x * camera.x, source.maskRadii.y * camera.x);
   return s;
 }
 
@@ -31,8 +32,7 @@ fn cameraSprite(source: PolySprite) -> PolySprite {
 @fragment fn fs(v: Varying) -> @location(0) vec4f {
   let s = cameraSprite(sprites[v.index]);
   let p = v.position.xy + globals.origin.xy;
-  let radii = clamp(s.radii, vec4f(0.0), vec4f(max(min(s.clipBounds.z - s.clipBounds.x, s.clipBounds.w - s.clipBounds.y) * 0.5, 0.0)));
-  let weight = coverage(roundedRectSdf(p, s.clipBounds, radii)) * clamp(s.params.x, 0.0, 1.0) * areaIn(s.mask, p) * cornerCoverage(s.mask, s.maskRadii, p);
+  let weight = coverage(roundedRectSdf(p, s.clipBounds, s.radii)) * clamp(s.params.x, 0.0, 1.0) * areaIn(s.mask, p) * cornerCoverage(s.mask, s.maskRadii, p);
   if weight <= 0.0 { discard; }
   var uv = (p - s.bounds.xy) / (s.bounds.zw - s.bounds.xy);
   let turn = u32(s.params.z);

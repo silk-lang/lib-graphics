@@ -7,7 +7,7 @@ struct MonoSprite {
   // straight alpha
   color: vec4f,
   tile: vec4f,
-  maskRadii: vec4f,
+  maskRadii: Radii,
 }
 @group(0) @binding(1) var<storage, read> sprites: array<MonoSprite>;
 

@@ -8,12 +8,54 @@
 // Positions are scene pixels; a page holds only part of the scene, so `origins` gives where pixel
 // (0, 0) of the output (xy) and of the layer's page (zw) lie, and `maskOrigin` of the mask's page.
 struct Params {
-  op: u32, mode: u32, opacity: u32, backdropEnabled: u32, clip: vec4f, radius: f32, shape: u32, maskOrigin: vec2u,
+  op: u32, mode: u32, opacity: u32, backdropEnabled: u32, clip: vec4f, pad0: u32, pad1: u32, maskOrigin: vec2u,
   inverse0: vec4f, inverse1: vec4f, inverse2: vec4f, source: vec4f, mapped: u32, masked: u32, rounded: u32, pad2: u32,
-  // The content mask the layer lands in; its rounded corners clip the layer (radii tl, tr, br, bl).
-  maskBounds: vec4f, maskRadii: vec4f,
+  // The content mask the layer lands in; its rounded corners clip the layer.
+  maskBounds: vec4f, maskRadii: Radii,
   origins: vec4u,
+  // The corners of the backdrop's `clip`.
+  clipRadii: Radii,
 }
+// A copy of common.wgsl's corner functions, which this shader is not prepended with.
+// Corner radii, fitted on the CPU (Radii.fitted): horizontal `x` and vertical `y` of the
+// top-left, top-right, bottom-right and bottom-left corners. A corner with a zero radius is square.
+struct Radii { x: vec4f, y: vec4f }
+
+// The radii (horizontal, vertical) of the corner of quadrant `q` (from the center).
+fn pickRadii(q: vec2f, r: Radii) -> vec2f {
+  if q.x < 0.0 {
+    return select(vec2f(r.x.w, r.y.w), vec2f(r.x.x, r.y.x), q.y < 0.0);
+  }
+  return select(vec2f(r.x.z, r.y.z), vec2f(r.x.y, r.y.y), q.y < 0.0);
+}
+
+// Signed distance to the ellipse with radii `e` from `d`, a point measured from its center: the
+// implicit function over its gradient, exact for a circle. Matches radii.ellipseDistance.
+fn ellipseDistance(d: vec2f, e: vec2f) -> f32 {
+  let k1 = length(d / (e * e));
+  if k1 <= 0.0 { return -min(e.x, e.y); }
+  let k0 = length(d / e);
+  return k0 * (k0 - 1.0) / k1;
+}
+
+// Signed distance from `a`, a point folded into the positive quadrant of a rectangle of half size
+// `half`, to that rectangle with the corner there the quarter ellipse with radii `e`.
+fn foldedRectSdf(a: vec2f, half: vec2f, e: vec2f) -> f32 {
+  let d = a - (half - e);
+  if d.x > 0.0 && d.y > 0.0 && e.x > 0.0 && e.y > 0.0 {
+    return ellipseDistance(d, e);
+  }
+  let b = a - half;
+  return min(max(b.x, b.y), 0.0) + length(max(b, vec2f(0.0)));
+}
+
+// Signed distance from `p` to rectangle `r` with corners `radii`; negative inside.
+fn roundedRectSdf(p: vec2f, r: vec4f, radii: Radii) -> f32 {
+  let half = (r.zw - r.xy) * 0.5;
+  let q = p - (r.xy + half);
+  return foldedRectSdf(abs(q), half, max(pickRadii(q, radii), vec2f(0.0)));
+}
+
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var backdrop: texture_2d<f32>;
 @group(0) @binding(2) var layer: texture_2d<f32>;
@@ -68,17 +110,14 @@ fn layerBytes(pixel: vec2u) -> vec4u {
 
 // How much of the pixel at `p` the mask's rounded corners keep (common.wgsl's cornerCoverage).
 fn corner(p: vec2f) -> f32 {
-  let radii = params.maskRadii;
   let r = params.maskBounds;
   let half = (r.zw - r.xy) * 0.5;
   let q = p - (r.xy + half);
-  var picked = select(radii.z, radii.y, q.y < 0.0);
-  if q.x < 0.0 { picked = select(radii.w, radii.x, q.y < 0.0); }
-  let radius = clamp(picked, 0.0, max(min(half.x, half.y), 0.0));
-  if radius <= 0.0 { return 1.0; }
-  let d = abs(q) - half + radius;
+  let e = pickRadii(q, params.maskRadii);
+  if e.x <= 0.0 || e.y <= 0.0 { return 1.0; }
+  let d = abs(q) - half + e;
   if d.x <= 0.0 || d.y <= 0.0 { return 1.0; }
-  return clamp(0.5 - (length(d) - radius), 0.0, 1.0);
+  return clamp(0.5 - ellipseDistance(d, e), 0.0, 1.0);
 }
 
 // `s` scaled by `k` (0 to 1).
@@ -111,15 +150,7 @@ fn faded(s: vec4u) -> vec4u {
   }
   var b = bytes(backdrop, local);
   if params.backdropEnabled != 0u {
-    let halfSize = (params.clip.zw - params.clip.xy) * 0.5;
-    let p = position.xy - (params.clip.xy + halfSize);
-    let radius = min(params.radius, min(halfSize.x, halfSize.y));
-    let q = abs(p) - halfSize + radius;
-    var distance = length(max(q, vec2f(0.0))) + min(max(q.x, q.y), 0.0) - radius;
-    if params.shape == 1u {
-      let normalized = p / max(halfSize, vec2f(0.001));
-      distance = (length(normalized) - 1.0) * min(halfSize.x, halfSize.y);
-    }
+    let distance = roundedRectSdf(position.xy, params.clip, params.clipRadii);
     let coverage = clamp(0.5 - distance, 0.0, 1.0) * f32(params.opacity) / 255.0;
     b = vec4u(round(mix(vec4f(b), vec4f(bytes(filteredBackdrop, local)), coverage)));
   }

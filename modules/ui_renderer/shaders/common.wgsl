@@ -46,53 +46,68 @@ fn areaIn(r: vec4f, p: vec2f) -> f32 {
   return d.x * d.y;
 }
 
-// The radius of the corner of quadrant `q` (from the center): top-left, top-right, bottom-right,
-// bottom-left in `radii`.
-fn pickRadius(q: vec2f, radii: vec4f) -> f32 {
+// Corner radii, fitted on the CPU (Radii.fitted): horizontal `x` and vertical `y` of the
+// top-left, top-right, bottom-right and bottom-left corners. A corner with a zero radius is square.
+struct Radii { x: vec4f, y: vec4f }
+
+// The radii (horizontal, vertical) of the corner of quadrant `q` (from the center).
+fn pickRadii(q: vec2f, r: Radii) -> vec2f {
   if q.x < 0.0 {
-    return select(radii.w, radii.x, q.y < 0.0);
+    return select(vec2f(r.x.w, r.y.w), vec2f(r.x.x, r.y.x), q.y < 0.0);
   }
-  return select(radii.z, radii.y, q.y < 0.0);
+  return select(vec2f(r.x.z, r.y.z), vec2f(r.x.y, r.y.y), q.y < 0.0);
 }
 
-// Signed distance from `p` to rectangle `r` with circular corners `radii`, each clamped to half
-// the shorter side; negative inside.
-fn roundedRectSdf(p: vec2f, r: vec4f, radii: vec4f) -> f32 {
+// Signed distance to the ellipse with radii `e` from `d`, a point measured from its center: the
+// implicit function over its gradient, exact for a circle. Matches radii.ellipseDistance.
+fn ellipseDistance(d: vec2f, e: vec2f) -> f32 {
+  let k1 = length(d / (e * e));
+  if k1 <= 0.0 { return -min(e.x, e.y); }
+  let k0 = length(d / e);
+  return k0 * (k0 - 1.0) / k1;
+}
+
+// Signed distance from `a`, a point folded into the positive quadrant of a rectangle of half size
+// `half`, to that rectangle with the corner there the quarter ellipse with radii `e`.
+fn foldedRectSdf(a: vec2f, half: vec2f, e: vec2f) -> f32 {
+  let d = a - (half - e);
+  if d.x > 0.0 && d.y > 0.0 && e.x > 0.0 && e.y > 0.0 {
+    return ellipseDistance(d, e);
+  }
+  let b = a - half;
+  return min(max(b.x, b.y), 0.0) + length(max(b, vec2f(0.0)));
+}
+
+// Signed distance from `p` to rectangle `r` with corners `radii`; negative inside.
+fn roundedRectSdf(p: vec2f, r: vec4f, radii: Radii) -> f32 {
   let half = (r.zw - r.xy) * 0.5;
-  let center = r.xy + half;
-  let q = p - center;
-  let limit = max(min(half.x, half.y), 0.0);
-  let radius = clamp(pickRadius(q, radii), 0.0, limit);
-  let d = abs(q) - half + radius;
-  return min(max(d.x, d.y), 0.0) + length(max(d, vec2f(0.0))) - radius;
+  let q = p - (r.xy + half);
+  return foldedRectSdf(abs(q), half, max(pickRadii(q, radii), vec2f(0.0)));
+}
+
+// Whether any corner of `radii` is rounded.
+fn isRounded(radii: Radii) -> bool {
+  return max(max(radii.x.x, radii.x.y), max(radii.x.z, radii.x.w)) > 0.0;
 }
 
 // How much of the pixel centered at `p` the rounded corners `radii` of content mask `r` keep: 1
 // away from the corners, so the rectangle stays `areaIn`'s. Matches ContentMask.cornerCoverage.
-fn cornerCoverage(r: vec4f, radii: vec4f, p: vec2f) -> f32 {
-  if max(max(radii.x, radii.y), max(radii.z, radii.w)) <= 0.0 { return 1.0; }
+fn cornerCoverage(r: vec4f, radii: Radii, p: vec2f) -> f32 {
+  if !isRounded(radii) { return 1.0; }
   let half = (r.zw - r.xy) * 0.5;
   let q = p - (r.xy + half);
-  let radius = clamp(pickRadius(q, radii), 0.0, max(min(half.x, half.y), 0.0));
-  if radius <= 0.0 { return 1.0; }
-  let d = abs(q) - half + radius;
+  let e = pickRadii(q, radii);
+  if e.x <= 0.0 || e.y <= 0.0 { return 1.0; }
+  let d = abs(q) - half + e;
   if d.x <= 0.0 || d.y <= 0.0 { return 1.0; }
-  return clamp(0.5 - (length(d) - radius), 0.0, 1.0);
+  return clamp(0.5 - ellipseDistance(d, e), 0.0, 1.0);
 }
 
 // Signed distance from `p` to rectangle `r` whose corner in `p`'s quadrant is the quarter
-// ellipse with radii `e` (an approximation off the ellipse, exact for circles).
+// ellipse with radii `e`.
 fn ellipticRectSdf(p: vec2f, r: vec4f, e: vec2f) -> f32 {
   let half = (r.zw - r.xy) * 0.5;
-  let q = abs(p - (r.xy + half));
-  let d = q - (half - e);
-  if d.x > 0.0 && d.y > 0.0 && e.x > 0.0 && e.y > 0.0 {
-    let k0 = length(d / e);
-    let k1 = length(d / (e * e));
-    return k0 * (k0 - 1.0) / k1;
-  }
-  let b = q - half;
-  return min(max(b.x, b.y), 0.0) + length(max(b, vec2f(0.0)));
+  return foldedRectSdf(abs(p - (r.xy + half)), half, e);
 }
 
 // Coverage of the pixel at `p` from a signed distance: exact for a straight edge.

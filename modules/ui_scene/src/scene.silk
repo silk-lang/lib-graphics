@@ -34,7 +34,6 @@ import silk.core.equal { Equal }
 import silk.core.order { Order, Ordering }
 import silk.core.ownership { Copy }
 import silk.geometry.matrix { Matrix3 }
-import silk.geometry.corners { Corners }
 import silk.geometry.rect { Rect }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
 import silk.num.f32
@@ -46,6 +45,7 @@ import effects { LayerEffects }
 import bounds_tree { BoundsTree }
 import scroll { ScrollGroup, ScrollLink, ScrollPosition, ScrollAxis, ROOT_GROUP }
 import color
+import radii { Radii }
 import primitives {
   Background,
   ColorStop,
@@ -635,7 +635,7 @@ fn rootGroup() -> ScrollGroup {
     parent: ROOT_GROUP,
     link: ScrollLink { node: 4294967295, x: ScrollAxis.fixed(), y: ScrollAxis.fixed() },
     clip: everything,
-    clipRadii: Corners<f32>.zero(),
+    clipRadii: Radii.zero(),
     bounds: everything,
   }
 }

@@ -6,6 +6,7 @@
 //! the scroll view or panel that contains it. Pixels are clipped by area, so a mask on integer
 //! coordinates clips exactly at pixel edges.
 import effects { LayerEffects }
+import radii { Radii, cornerOf, ellipseDistance }
 import silk.core.equal { Equal }
 import silk.core.ownership { Copy }
 import silk.geometry.corners { Corners }
@@ -23,12 +24,12 @@ import silk.color.rgba { Rgba }
 import color
 
 /// The clip of a primitive: a rectangle, with rounded corners when `radii` are not zero (as an
-/// `overflow: hidden` box with `border-radius` clips its content). Radii are clamped to half the
-/// shorter side when used.
+/// `overflow: hidden` box with `border-radius` clips its content). Radii are used as given:
+/// [`ContentMask.rounded`] fits them to the bounds.
 pub struct ContentMask {
   pub bounds: Rect<f32>,
-  /// Top-left, top-right, bottom-right, bottom-left, in device pixels.
-  pub radii: Corners<f32>,
+  /// In device pixels.
+  pub radii: Radii,
 }
 
 impl Copy for ContentMask {}
@@ -36,18 +37,18 @@ impl Copy for ContentMask {}
 impl ContentMask {
   /// A mask that clips to `bounds`.
   pub fn new(bounds: Rect<f32>) -> ContentMask {
-    return ContentMask { bounds: bounds, radii: Corners<f32>.zero() }
+    return ContentMask { bounds: bounds, radii: Radii.zero() }
   }
 
   /// A mask that clips to `bounds` with corner radii `radii`.
-  pub fn rounded(bounds: Rect<f32>, radii: Corners<f32>) -> ContentMask {
-    return ContentMask { bounds: bounds, radii: radii }
+  /// They are [`Radii.fitted`] to `bounds`.
+  pub fn rounded(bounds: Rect<f32>, radii: Radii) -> ContentMask {
+    return ContentMask { bounds: bounds, radii: radii.fittedTo(bounds) }
   }
 
   /// Whether any corner is rounded.
   pub fn isRounded(self: Self) -> bool {
-    return self.radii.topLeft > 0.0 || self.radii.topRight > 0.0 || self.radii.bottomRight > 0.0
-      || self.radii.bottomLeft > 0.0
+    return self.radii.isRounded()
   }
 
   /// The mask moved by `dx`, `dy`.
@@ -76,35 +77,52 @@ impl ContentMask {
     let b = other.insetTo(bounds)
     return ContentMask {
       bounds: bounds,
-      radii: Corners<f32>.new(
-        f32.max(a.topLeft, b.topLeft),
-        f32.max(a.topRight, b.topRight),
-        f32.max(a.bottomRight, b.bottomRight),
-        f32.max(a.bottomLeft, b.bottomLeft),
-      ),
+      radii: Radii {
+        x: Corners<f32>.new(
+          f32.max(a.x.topLeft, b.x.topLeft),
+          f32.max(a.x.topRight, b.x.topRight),
+          f32.max(a.x.bottomRight, b.x.bottomRight),
+          f32.max(a.x.bottomLeft, b.x.bottomLeft),
+        ),
+        y: Corners<f32>.new(
+          f32.max(a.y.topLeft, b.y.topLeft),
+          f32.max(a.y.topRight, b.y.topRight),
+          f32.max(a.y.bottomRight, b.y.bottomRight),
+          f32.max(a.y.bottomLeft, b.y.bottomLeft),
+        ),
+      }.fittedTo(bounds),
     }
   }
 
   /// The radii left at the corners of `inner`, a rectangle inside the mask.
-  fn insetTo(self: Self, inner: Rect<f32>) -> Corners<f32> {
+  fn insetTo(self: Self, inner: Rect<f32>) -> Radii {
     if !self.isRounded() {
-      return Corners<f32>.zero()
+      return Radii.zero()
     }
     let left = inner.xMin - self.bounds.xMin
     let top = inner.yMin - self.bounds.yMin
     let right = self.bounds.xMax - inner.xMax
     let bottom = self.bounds.yMax - inner.yMax
-    return Corners<f32>.new(
-      f32.max(0.0, self.radii.topLeft - f32.max(left, top)),
-      f32.max(0.0, self.radii.topRight - f32.max(right, top)),
-      f32.max(0.0, self.radii.bottomRight - f32.max(right, bottom)),
-      f32.max(0.0, self.radii.bottomLeft - f32.max(left, bottom)),
-    )
+    let r = self.radii
+    return Radii {
+      x: Corners<f32>.new(
+        f32.max(0.0, r.x.topLeft - f32.max(left, top)),
+        f32.max(0.0, r.x.topRight - f32.max(right, top)),
+        f32.max(0.0, r.x.bottomRight - f32.max(right, bottom)),
+        f32.max(0.0, r.x.bottomLeft - f32.max(left, bottom)),
+      ),
+      y: Corners<f32>.new(
+        f32.max(0.0, r.y.topLeft - f32.max(left, top)),
+        f32.max(0.0, r.y.topRight - f32.max(right, top)),
+        f32.max(0.0, r.y.bottomRight - f32.max(right, bottom)),
+        f32.max(0.0, r.y.bottomLeft - f32.max(left, bottom)),
+      ),
+    }
   }
 
   /// How much of the pixel centered at `x`, `y` the rounded corners keep, from 0 to 1 (1 for an
   /// unrounded mask; the rectangle itself is left to the caller's area test). Matches the GPU's
-  /// `roundedCoverage`.
+  /// `cornerCoverage`.
   pub fn cornerCoverage(self: Self, x: f32, y: f32) -> f32 {
     if !self.isRounded() {
       return 1.0
@@ -114,24 +132,21 @@ impl ContentMask {
     let hy = (r.yMax - r.yMin) * 0.5
     let qx = x - (r.xMin + hx)
     let qy = y - (r.yMin + hy)
-    let limit = f32.max(f32.min(hx, hy), 0.0)
-    let picked = if qx < 0.0 {
-      if qy < 0.0 { self.radii.topLeft } else { self.radii.bottomLeft }
-    } else {
-      if qy < 0.0 { self.radii.topRight } else { self.radii.bottomRight }
-    }
-    let radius = f32.min(f32.max(picked, 0.0), limit)
-    if radius <= 0.0 {
-      return 1.0
-    }
-    let dx = f32.abs(qx) - hx + radius
-    let dy = f32.abs(qy) - hy + radius
-    if dx <= 0.0 || dy <= 0.0 {
-      return 1.0
-    }
-    let distance = f32.sqrt(dx * dx + dy * dy) - radius
-    return f32.min(f32.max(0.5 - distance, 0.0), 1.0)
+    let left = qx < 0.0
+    let up = qy < 0.0
+    let ex = cornerOf(self.radii.x, left, up)
+    let ey = cornerOf(self.radii.y, left, up)
+    return ellipseCornerCoverage(f32.abs(qx) - hx + ex, f32.abs(qy) - hy + ey, ex, ey)
   }
+}
+
+/// How much of a pixel at `dx`, `dy` from a corner's ellipse center the corner keeps: 1 unless
+/// the point lies past the center on both axes.
+fn ellipseCornerCoverage(dx: f32, dy: f32, ex: f32, ey: f32) -> f32 {
+  if ex <= 0.0 || ey <= 0.0 || dx <= 0.0 || dy <= 0.0 {
+    return 1.0
+  }
+  return f32.min(f32.max(0.5 - ellipseDistance(dx, dy, ex, ey), 0.0), 1.0)
 }
 
 /// A gradient stop: `color` at `offset` (0 at the start of the gradient line, 1 at its end).
@@ -266,14 +281,14 @@ impl Equal for BorderStyle {
 ///
 /// The background fills the whole rounded rectangle. The border is the band between that outline
 /// and the inner outline inset by the border widths; it is drawn over the background, so a
-/// translucent border shows the background through it, as GPUI does. Each radius is clamped to
-/// half the smaller side. An inner corner is elliptical, with radii `r - left` (or `r - right`)
-/// across and `r - top` (or `r - bottom`) down, as in CSS.
+/// translucent border shows the background through it, as GPUI does. The radii are
+/// [`Radii.fitted`] to the bounds when drawn, and the inner corners are [`Radii.inset`] by the
+/// border widths, as in CSS.
 pub struct Quad {
   pub bounds: Rect<f32>,
   pub mask: ContentMask,
   pub background: Background,
-  pub cornerRadii: Corners<f32>,
+  pub cornerRadii: Radii,
   pub borderWidths: Insets<f32>,
   pub borderColor: Rgba<f32>,
   pub borderStyle: BorderStyle,
@@ -288,7 +303,7 @@ impl Quad {
       bounds: bounds,
       mask: mask,
       background: background,
-      cornerRadii: Corners<f32>.uniform(0.0),
+      cornerRadii: Radii.zero(),
       borderWidths: Insets<f32>.uniform(0.0),
       borderColor: color.transparent(),
       borderStyle: BorderStyle.Solid,
@@ -306,7 +321,7 @@ impl Quad {
 /// A blurred rounded rectangle, as CSS `box-shadow`.
 ///
 /// `bounds` and `cornerRadii` are the box casting the shadow. The shadow's shape is that box moved
-/// by `offset` and grown by `spread` on every side (radii grow by `spread` too, never below 0). It
+/// by `offset` and grown by `spread` on every side, its radii [`Radii.spread`] and fitted. It
 /// is blurred by a Gaussian with standard deviation `blurRadius / 2`, as CSS defines the blur
 /// radius. A drop shadow (`inset` false) draws the blurred shape and is not cut out under the box,
 /// as in GPUI: draw the box over it. An inset shadow draws inside the box only: the box minus the
@@ -314,7 +329,7 @@ impl Quad {
 pub struct Shadow {
   pub bounds: Rect<f32>,
   pub mask: ContentMask,
-  pub cornerRadii: Corners<f32>,
+  pub cornerRadii: Radii,
   pub color: Rgba<f32>,
   pub blurRadius: f32,
   pub offset: Vector2<f32>,
@@ -346,20 +361,14 @@ impl Shadow {
     )
   }
 
-  /// The radii of [`Shadow.shape`].
-  pub fn shapeRadii(self: &Self) -> Corners<f32> {
+  /// The radii of [`Shadow.shape`]: the box's, fitted to it, then spread and fitted to the shape.
+  pub fn shapeRadii(self: &Self) -> Radii {
     let grow = if self.inset {
       -self.spread
     } else {
       self.spread
     }
-    let r = self.cornerRadii
-    return Corners<f32>.new(
-      f32.max(r.topLeft + grow, 0.0),
-      f32.max(r.topRight + grow, 0.0),
-      f32.max(r.bottomRight + grow, 0.0),
-      f32.max(r.bottomLeft + grow, 0.0),
-    )
+    return self.cornerRadii.fittedTo(self.bounds).spread(grow).fittedTo(self.shape())
   }
 
   /// Everything the shadow can touch: the blurred shape (3 sigma covers all but 0.3% of the
@@ -414,7 +423,8 @@ pub struct ImageSprite {
   pub mask: ContentMask,
   pub tile: AtlasTile,
   pub opacity: f32,
-  pub cornerRadii: Corners<f32>,
+  /// The radii of `clipBounds`, fitted to it when drawn.
+  pub cornerRadii: Radii,
   /// Draw as luminance only (Rec. 709 weights on the sRGB channels).
   pub grayscale: bool,
 }
