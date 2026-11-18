@@ -138,6 +138,20 @@ impl AtlasPixels {
     return u8.toU32(texture.bytes.get(at))
   }
 
+  /// Channel `c` of the texel of `tile` that holds tile-space position `(u, v)`, clamped to the
+  /// tile; 0..=255 as f32.
+  fn nearest(self: &Self, tile: AtlasTile, u: f32, v: f32, c: u32) -> f32 {
+    let t = u32.toUsize(tile.texture.index)
+    if t >= self.textures.length() {
+      return 0.0
+    }
+    let w = tile.bounds.xMax - tile.bounds.xMin
+    let h = tile.bounds.yMax - tile.bounds.yMin
+    let x = f32.toU32(clampF(f32.floor(u), 0.0, u32.toF32(w - 1)))
+    let y = f32.toU32(clampF(f32.floor(v), 0.0, u32.toF32(h - 1)))
+    return u32.toF32(self.texel(t, tile.bounds.xMin + x, tile.bounds.yMin + y, c))
+  }
+
   /// Bilinear sample of channel `c` of `tile` at tile-space position `(u, v)` (texel centers at
   /// `.5`), clamped to the tile; 0..=255 as f32.
   fn sample(self: &Self, tile: AtlasTile, u: f32, v: f32, c: u32) -> f32 {
@@ -1226,10 +1240,11 @@ impl CpuRenderer {
           }
           let u = ux * b.width() * sx
           let v = vy * b.height() * sy
-          let mut r = pixels.sample(sprite.tile, u, v, 0)
-          let mut g = pixels.sample(sprite.tile, u, v, 1)
-          let mut bl = pixels.sample(sprite.tile, u, v, 2)
-          let a = pixels.sample(sprite.tile, u, v, 3)
+          let nearest = sprite.nearest
+          let mut r = if nearest { pixels.nearest(sprite.tile, u, v, 0) } else { pixels.sample(sprite.tile, u, v, 0) }
+          let mut g = if nearest { pixels.nearest(sprite.tile, u, v, 1) } else { pixels.sample(sprite.tile, u, v, 1) }
+          let mut bl = if nearest { pixels.nearest(sprite.tile, u, v, 2) } else { pixels.sample(sprite.tile, u, v, 2) }
+          let a = if nearest { pixels.nearest(sprite.tile, u, v, 3) } else { pixels.sample(sprite.tile, u, v, 3) }
           if sprite.grayscale {
             let l = 0.2126 * r + 0.7152 * g + 0.0722 * bl
             r = l

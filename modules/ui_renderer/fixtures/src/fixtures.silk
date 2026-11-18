@@ -244,6 +244,7 @@ pub effect fn cards(scene: &mut Scene, tiles: &mut Tiles) -> ()
         opacity: 1.0,
         cornerRadii: Corners<f32>.uniform(6.0),
         grayscale: i == 1,
+        nearest: i == 2,
       },
     )
     let mut check = VectorPath.make()
@@ -509,6 +510,7 @@ pub effect fn nested(scene: &mut Scene, tiles: &mut Tiles) -> ()
       opacity: 0.7,
       cornerRadii: Corners<f32>.uniform(0.0),
       grayscale: false,
+      nearest: false,
     },
   )
   let mut cache = PathCache.make()

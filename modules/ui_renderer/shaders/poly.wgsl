@@ -6,7 +6,7 @@ struct PolySprite {
   tile: vec4f,
   clipBounds: vec4f,
   radii: vec4f,
-  // opacity, grayscale (1 or 0)
+  // opacity, grayscale (1 or 0), quarter turns, nearest (1 or 0)
   params: vec4f,
   maskRadii: vec4f,
 }
@@ -39,7 +39,9 @@ fn cameraSprite(source: PolySprite) -> PolySprite {
   if turn == 1u { uv = vec2f(uv.y, 1.0 - uv.x); }
   if turn == 2u { uv = vec2f(1.0) - uv; }
   if turn == 3u { uv = vec2f(1.0 - uv.y, uv.x); }
-  var c = sampleTile(s.tile, s.bounds, s.bounds.xy + uv * (s.bounds.zw - s.bounds.xy));
+  let at = s.bounds.xy + uv * (s.bounds.zw - s.bounds.xy);
+  var c: vec4f;
+  if s.params.w != 0.0 { c = nearestTile(s.tile, s.bounds, at); } else { c = sampleTile(s.tile, s.bounds, at); }
   if s.params.y != 0.0 {
     let l = dot(c.rgb, vec3f(0.2126, 0.7152, 0.0722));
     c = vec4f(l, l, l, c.a);
