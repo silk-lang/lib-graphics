@@ -171,14 +171,77 @@ fn movedMask(mask: ContentMask, p: Placement) -> ContentMask {
   return mask.moved(p.dx, p.dy).intersect(p.mask)
 }
 
+/// Where each node's scroll position is in a list of them: a scene of a thousand scrollers
+/// (every clipped box is one) would otherwise read the list a thousand times.
+pub struct ScrollIndex {
+  /// For a node below [`INDEXED`], its position's index + 1, or 0 for none.
+  places: List<u32>,
+  /// The nodes that have a place, to forget them without clearing every place.
+  nodes: List<u32>,
+}
+
+/// Nodes from here up are not indexed, so `places` stays small whatever a node is called.
+const INDEXED: u32 = 4194304
+
+impl ScrollIndex {
+  pub fn make() -> ScrollIndex {
+    return ScrollIndex { places: List<u32>.make(), nodes: List<u32>.make() }
+  }
+
+  /// Whether `node`'s place can be kept: [`ScrollIndex.find`] says nothing of other nodes.
+  pub fn holds(node: u32) -> bool {
+    return node < INDEXED
+  }
+
+  /// The index of `node`'s position, or `usize.MAX` when it has none.
+  pub fn find(self: &Self, node: u32) -> usize {
+    if u32.toUsize(node) < self.places.length() {
+      let place = self.places.get(u32.toUsize(node))
+      if place != 0 {
+        return u32.toUsize(place) - 1
+      }
+    }
+    return usize.MAX
+  }
+
+  /// Keeps `index` as the place of `node`, which [`ScrollIndex.holds`].
+  pub effect fn set(self: &mut Self, node: u32, index: usize) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    let at = u32.toUsize(node)
+    let held = self.places.length()
+    if at >= held {
+      run self.places.appendRepeated(0, at + 1 - held)
+    }
+    if self.places.get(at) == 0 {
+      run self.nodes.append(node)
+    }
+    self.places.set(at, usize.toU32(index) + 1)
+  }
+
+  /// Forgets every place.
+  pub fn clear(self: &mut Self) -> () {
+    let nodes = self.nodes.asSlice()
+    let places = self.places.asMutSlice()
+    let mut i: usize = 0
+    while i < nodes.length {
+      places[u32.toUsize(nodes[i])] = 0
+      i = i + 1
+    }
+    self.nodes.clear()
+  }
+}
+
 /// The offset and clip of every group of a scene at some scroll positions.
 pub struct Placements {
   list: List<Placement>,
+  /// Where each node's position is in the positions being resolved.
+  index: ScrollIndex,
 }
 
 impl Placements {
   pub fn make() -> Placements {
-    return Placements { list: List<Placement>.make() }
+    return Placements { list: List<Placement>.make(), index: ScrollIndex.make() }
   }
 
   /// Works out every group of `groups` (parents before children) at the scroll positions of
@@ -193,11 +256,20 @@ impl Placements {
     ? &mut Allocator {
     self.list.clear()
     run self.list.append(Placement { dx: 0.0, dy: 0.0, clip: unbounded(), mask: ContentMask.new(unbounded()) })
+    self.index.clear()
+    let mut p: usize = 0
+    while p < painted.length {
+      // The first position of a node is the one a search from the start finds.
+      if ScrollIndex.holds(painted[p].node) && self.index.find(painted[p].node) == usize.MAX {
+        run self.index.set(painted[p].node, p)
+      }
+      p = p + 1
+    }
     let mut g: usize = 1
     while g < groups.length {
       let group = groups[g]
       let parent = self.list.get(u32.toUsize(group.parent))
-      let scroll = positionOf(painted, newer, group.link.node)
+      let scroll = positionOf(&self.index, painted, newer, group.link.node)
       let dx = parent.dx + group.link.x.at(scroll.x)
       let dy = parent.dy + group.link.y.at(scroll.y)
       let mask = parent.mask.intersect(ContentMask.rounded(group.clip, group.clipRadii).moved(parent.dx, parent.dy))
@@ -323,13 +395,20 @@ impl Placements {
   }
 }
 
-fn positionOf(painted: &[ScrollPosition], newer: &[ScrollPosition], node: u32) -> Vector2<f32> {
+fn positionOf(index: &ScrollIndex, painted: &[ScrollPosition], newer: &[ScrollPosition], node: u32) -> Vector2<f32> {
   let mut i: usize = 0
   while i < newer.length {
     if newer[i].node == node {
       return Vector2<f32> { x: newer[i].x, y: newer[i].y }
     }
     i = i + 1
+  }
+  if ScrollIndex.holds(node) {
+    let at = index.find(node)
+    if at == usize.MAX {
+      return Vector2<f32> { x: 0.0, y: 0.0 }
+    }
+    return Vector2<f32> { x: painted[at].x, y: painted[at].y }
   }
   i = 0
   while i < painted.length {

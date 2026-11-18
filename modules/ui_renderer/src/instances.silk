@@ -40,7 +40,10 @@ pub const SHADOW_BYTES: usize = 144
 
 pub const UNDERLINE_BYTES: usize = 80
 
-pub const MONO_BYTES: usize = 80
+pub const MONO_BYTES: usize = 96
+
+/// Bytes of a `Transform` of `shaders/common.wgsl`.
+pub const TRANSFORM_BYTES: usize = 128
 
 pub const POLY_BYTES: usize = 112
 
@@ -182,6 +185,9 @@ effect fn pushPaint(
   paint: Background,
   box: Rect<f32>,
   dashed: bool,
+  /// The transform of the primitive's layer (see [`Instances.pack`]), which rides in the spare
+  /// word of the paint's `stops`.
+  transform: f32,
 ) -> ()
   ! OutOfMemoryError
   ? &mut Allocator {
@@ -199,7 +205,7 @@ effect fn pushPaint(
       run pushColor(&mut bytes, fill)
       run push4(&mut bytes, 0.0, 0.0, 0.0, 0.0)
       run push4(&mut bytes, 0.0, 0.0, 0.0, 0.0)
-      run push4(&mut bytes, 1.0, 0.0, 0.0, 0.0)
+      run push4(&mut bytes, 1.0, 0.0, 0.0, transform)
     }
     Background.Linear { gradient } => {
       // CSS: the line runs through the center at `angle` clockwise from up, long enough that the
@@ -212,7 +218,7 @@ effect fn pushPaint(
       let half = f32.max((f32.abs(w * dx) + f32.abs(h * dy)) * 0.5, 0.000001)
       run pushGradientHead(&mut bytes, &mut ramps, &mut cache, gradient.from, gradient.to, gradient.interpolation, dash)
       run push4(&mut bytes, (box.xMin + box.xMax) * 0.5, (box.yMin + box.yMax) * 0.5, dx, dy)
-      run push4(&mut bytes, half, gradient.from.offset, gradient.to.offset, 0.0)
+      run push4(&mut bytes, half, gradient.from.offset, gradient.to.offset, transform)
     }
     Background.Stops { gradient: g } => {
       // The stops go into `ramps` as five words each: the offset, then the straight color.
@@ -251,7 +257,7 @@ effect fn pushPaint(
           let h = box.yMax - box.yMin
           let half = f32.max((f32.abs(w * dx) + f32.abs(h * dy)) * 0.5, 0.000001)
           run push4(&mut bytes, (box.xMin + box.xMax) * 0.5, (box.yMin + box.yMax) * 0.5, dx, dy)
-          run push4(&mut bytes, half, 0.0, 0.0, 0.0)
+          run push4(&mut bytes, half, 0.0, 0.0, transform)
         }
         GradientShape.Radial => {
           run push4(
@@ -261,11 +267,11 @@ effect fn pushPaint(
             1.0 / f32.max(g.radiusX, 0.000001),
             1.0 / f32.max(g.radiusY, 0.000001),
           )
-          run push4(&mut bytes, 1.0, 0.0, 0.0, 0.0)
+          run push4(&mut bytes, 1.0, 0.0, 0.0, transform)
         }
         GradientShape.Conic => {
           run push4(&mut bytes, box.xMin + g.centerX, box.yMin + g.centerY, g.angle / 360.0, 0.0)
-          run push4(&mut bytes, 1.0, 0.0, 0.0, 0.0)
+          run push4(&mut bytes, 1.0, 0.0, 0.0, transform)
         }
       }
     }
@@ -302,7 +308,7 @@ effect fn pushGradientHead(
   run pushColor(&mut bytes, to.color)
 }
 
-effect fn packQuad(scene: &Scene, bytes: &mut List<u8>, ramps: &mut List<u8>, cache: &mut RampCache, q: Quad) -> ()
+effect fn packQuad(scene: &Scene, bytes: &mut List<u8>, ramps: &mut List<u8>, cache: &mut RampCache, q: Quad, transform: f32) -> ()
   ! OutOfMemoryError
   ? &mut Allocator {
   run pushRect(&mut bytes, q.bounds)
@@ -320,11 +326,11 @@ effect fn packQuad(scene: &Scene, bytes: &mut List<u8>, ramps: &mut List<u8>, ca
     BorderStyle.Solid => false
     BorderStyle.Dashed => true
   }
-  run pushPaint(scene, &mut bytes, &mut ramps, &mut cache, q.background, q.bounds, dashed)
+  run pushPaint(scene, &mut bytes, &mut ramps, &mut cache, q.background, q.bounds, dashed, transform)
   run pushCorners(&mut bytes, q.mask.radii)
 }
 
-effect fn packShadow(bytes: &mut List<u8>, s: Shadow) -> ()
+effect fn packShadow(bytes: &mut List<u8>, s: Shadow, transform: f32) -> ()
   ! OutOfMemoryError
   ? &mut Allocator {
   run pushRect(&mut bytes, s.shape())
@@ -342,13 +348,13 @@ effect fn packShadow(bytes: &mut List<u8>, s: Shadow) -> ()
     } else {
       0.0
     },
-    0.0,
+    transform,
     0.0,
   )
   run pushCorners(&mut bytes, s.mask.radii)
 }
 
-effect fn packUnderline(bytes: &mut List<u8>, u: Underline) -> ()
+effect fn packUnderline(bytes: &mut List<u8>, u: Underline, transform: f32) -> ()
   ! OutOfMemoryError
   ? &mut Allocator {
   run pushRect(&mut bytes, u.bounds)
@@ -362,7 +368,7 @@ effect fn packUnderline(bytes: &mut List<u8>, u: Underline) -> ()
     } else {
       0.0
     },
-    0.0,
+    transform,
     0.0,
   )
   run pushCorners(&mut bytes, u.mask.radii)
@@ -374,7 +380,7 @@ effect fn pushTile(bytes: &mut List<u8>, r: Rect<u32>) -> ()
   run push4(&mut bytes, u32.toF32(r.xMin), u32.toF32(r.yMin), u32.toF32(r.xMax), u32.toF32(r.yMax))
 }
 
-effect fn packGlyph(bytes: &mut List<u8>, g: GlyphSprite) -> ()
+effect fn packGlyph(bytes: &mut List<u8>, g: GlyphSprite, transform: f32) -> ()
   ! OutOfMemoryError
   ? &mut Allocator {
   run pushRect(&mut bytes, g.bounds)
@@ -382,9 +388,10 @@ effect fn packGlyph(bytes: &mut List<u8>, g: GlyphSprite) -> ()
   run pushColor(&mut bytes, g.color)
   run pushTile(&mut bytes, g.tile.bounds)
   run pushCorners(&mut bytes, g.mask.radii)
+  run push4(&mut bytes, transform, 0.0, 0.0, 0.0)
 }
 
-effect fn packImage(bytes: &mut List<u8>, s: ImageSprite) -> ()
+effect fn packImage(bytes: &mut List<u8>, s: ImageSprite, transform: f32) -> ()
   ! OutOfMemoryError
   ? &mut Allocator {
   run pushRect(&mut bytes, s.bounds)
@@ -401,7 +408,7 @@ effect fn packImage(bytes: &mut List<u8>, s: ImageSprite) -> ()
       0.0
     },
     u32.toF32(s.quarterTurns % 4),
-    0.0,
+    transform,
   )
   run pushCorners(&mut bytes, s.mask.radii)
 }
@@ -461,8 +468,9 @@ impl Instances {
   }
 
   /// Packs every layer of `scene`, which must be finished, with its scroll groups moved to
-  /// `placed`.
-  pub effect fn pack(self: &mut Self, scene: &Scene, placed: &Placements) -> ()
+  /// `placed`. `transforms[l]` is the transform layer `l`'s primitives are drawn through: an
+  /// index into the renderer's `Transform`s, 0 for a layer drawn where it lies.
+  pub effect fn pack(self: &mut Self, scene: &Scene, placed: &Placements, transforms: &[u32]) -> ()
     ! OutOfMemoryError
     ? &mut Allocator {
     self.quads.clear()
@@ -491,39 +499,40 @@ impl Instances {
       run self.bases.append(usize.toU32(self.glyphs.length() / MONO_BYTES))
       run self.bases.append(usize.toU32(self.images.length() / POLY_BYTES))
       run self.bases.append(0)
+      let transform = u32.toF32(transforms[u32.toUsize(layer)])
       let shadows = scene.shadows(layer)
       let mut groups = scene.groupsOf(layer, PrimitiveKind.Shadow)
       let mut i: usize = 0
       while i < shadows.length {
-        run packShadow(&mut self.shadows, placed.shadow(shadows[i], groups[i]))
+        run packShadow(&mut self.shadows, placed.shadow(shadows[i], groups[i]), transform)
         i = i + 1
       }
       let quads = scene.quads(layer)
       groups = scene.groupsOf(layer, PrimitiveKind.Quad)
       i = 0
       while i < quads.length {
-        run packQuad(scene, &mut self.quads, &mut self.ramps, &mut self.rampCache, placed.quad(quads[i], groups[i]))
+        run packQuad(scene, &mut self.quads, &mut self.ramps, &mut self.rampCache, placed.quad(quads[i], groups[i]), transform)
         i = i + 1
       }
       let underlines = scene.underlines(layer)
       groups = scene.groupsOf(layer, PrimitiveKind.Underline)
       i = 0
       while i < underlines.length {
-        run packUnderline(&mut self.underlines, placed.underline(underlines[i], groups[i]))
+        run packUnderline(&mut self.underlines, placed.underline(underlines[i], groups[i]), transform)
         i = i + 1
       }
       let glyphs = scene.glyphs(layer)
       groups = scene.groupsOf(layer, PrimitiveKind.Glyph)
       i = 0
       while i < glyphs.length {
-        run packGlyph(&mut self.glyphs, placed.glyph(glyphs[i], groups[i]))
+        run packGlyph(&mut self.glyphs, placed.glyph(glyphs[i], groups[i]), transform)
         i = i + 1
       }
       let images = scene.images(layer)
       groups = scene.groupsOf(layer, PrimitiveKind.Image)
       i = 0
       while i < images.length {
-        run packImage(&mut self.images, placed.image(images[i], groups[i]))
+        run packImage(&mut self.images, placed.image(images[i], groups[i]), transform)
         i = i + 1
       }
       let paths = scene.paths(layer)
@@ -546,7 +555,7 @@ impl Instances {
     let firstRun = self.runCount()
     run self.pathRuns.append(firstRun)
     run pushRect(&mut self.paths, p.mask.bounds)
-    run pushPaint(scene, &mut self.paths, &mut self.ramps, &mut self.rampCache, p.paint, p.paintBounds, false)
+    run pushPaint(scene, &mut self.paths, &mut self.ramps, &mut self.rampCache, p.paint, p.paintBounds, false, 0.0)
     run pushCorners(&mut self.paths, p.mask.radii)
     let bottom = p.y + u32.toI32(p.height)
     let mut s = u32.toUsize(p.stripStart)

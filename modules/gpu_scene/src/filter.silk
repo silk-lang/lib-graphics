@@ -111,9 +111,16 @@ pub struct FilterImage {
 impl FilterImage {
   pub effect fn make(device: &Device, width: u32, height: u32) -> FilterImage
     ! GpuError {
+    return run FilterImage.makeIn(device, width, height, FORMAT)
+  }
+
+  /// A texture like [`FilterImage.make`]'s in `format`: one a pass only reads, such as a copy
+  /// of a target in the target's own format.
+  pub effect fn makeIn(device: &Device, width: u32, height: u32, format: u32) -> FilterImage
+    ! GpuError {
     let mut descriptor = TextureDescriptor.default().withLabel(b"filter image")
     descriptor.setSize(extent(width, height))
-    descriptor.setFormat(FORMAT)
+    descriptor.setFormat(format)
     descriptor.setDimension(flags.WGPUTextureDimension_2D)
     descriptor.setMipLevelCount(1)
     descriptor.setSampleCount(1)

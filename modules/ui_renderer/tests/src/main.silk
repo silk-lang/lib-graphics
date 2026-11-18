@@ -111,6 +111,9 @@ effect fn renderOnGpu(
   renderer: &mut UiRenderer,
   fixture: &Fixture,
   bgra: bool,
+  /// Draws with `UiRenderer.drawReadable`: the target is read back where a layer needs what is
+  /// under it.
+  readable: bool,
 ) -> List<u8>
   ! GpuError | OutOfMemoryError
   ? &mut Allocator {
@@ -129,16 +132,30 @@ effect fn renderOnGpu(
   }
   let texture = run renderTarget(device, format)
   let view = run texture.createView(&TextureViewDescriptor.default())
-  run renderer.draw(
-    device,
-    queue,
-    &fixture.scene,
-    &atlas,
-    &view,
-    WIDTH,
-    HEIGHT,
-    color.transparent(),
-  )
+  if readable {
+    run renderer.drawReadable(
+      device,
+      queue,
+      &fixture.scene,
+      &atlas,
+      &texture,
+      &view,
+      WIDTH,
+      HEIGHT,
+      color.transparent(),
+    )
+  } else {
+    run renderer.draw(
+      device,
+      queue,
+      &fixture.scene,
+      &atlas,
+      &view,
+      WIDTH,
+      HEIGHT,
+      color.transparent(),
+    )
+  }
   run device.checkErrors()
   return run readBack(device, queue, &texture, bgra)
 }
@@ -285,10 +302,15 @@ effect fn program() -> i32
   let mut index: u32 = 0
   while index < COUNT {
     let f = run fixture(index)
-    let first = run renderOnGpu(&device, &queue, &mut rgba, &f, false)
+    let first = run renderOnGpu(&device, &queue, &mut rgba, &f, false, false)
     ok = compare(f.name, "rgba8", f.cpu.data(), first.asSlice(), f.tolerance) && ok
-    let swapped = run renderOnGpu(&device, &queue, &mut bgra, &f, true)
+    let swapped = run renderOnGpu(&device, &queue, &mut bgra, &f, true, false)
     ok = compare(f.name, "bgra8", f.cpu.data(), swapped.asSlice(), f.tolerance) && ok
+    // A target that is read back gives the same picture as one that is copied out.
+    let read = run renderOnGpu(&device, &queue, &mut rgba, &f, false, true)
+    ok = compare(f.name, "rgba8, read back", f.cpu.data(), read.asSlice(), f.tolerance) && ok
+    let readSwapped = run renderOnGpu(&device, &queue, &mut bgra, &f, true, true)
+    ok = compare(f.name, "bgra8, read back", f.cpu.data(), readSwapped.asSlice(), f.tolerance) && ok
     index = index + 1
   }
 
@@ -297,10 +319,10 @@ effect fn program() -> i32
   let mut again: u32 = 3
   while again < COUNT - 1 {
     let f = run fixture(again)
-    let first = run renderOnGpu(&device, &queue, &mut rgba, &f, false)
+    let first = run renderOnGpu(&device, &queue, &mut rgba, &f, false, false)
     let other = run fixture(0)
-    drop run renderOnGpu(&device, &queue, &mut rgba, &other, false)
-    let second = run renderOnGpu(&device, &queue, &mut rgba, &f, false)
+    drop run renderOnGpu(&device, &queue, &mut rgba, &other, false, false)
+    let second = run renderOnGpu(&device, &queue, &mut rgba, &f, false, false)
     ok = compare(
       f.name,
       "drawn again",
@@ -317,11 +339,11 @@ effect fn program() -> i32
   let mut corrected = run UiRenderer.make(&device, flags.WGPUTextureFormat_RGBA8Unorm)
   let defaults = TextSettings.default()
   corrected.setTextSettings(defaults)
-  let text = run renderOnGpu(&device, &queue, &mut corrected, &ramp, false)
+  let text = run renderOnGpu(&device, &queue, &mut corrected, &ramp, false, false)
   ok = checkText("text correction (gamma 1.8, contrast 1)", text.asSlice(), defaults) && ok
   let strong = TextSettings { gamma: 2.2, contrast: 2.0 }
   corrected.setTextSettings(strong)
-  let text2 = run renderOnGpu(&device, &queue, &mut corrected, &ramp, false)
+  let text2 = run renderOnGpu(&device, &queue, &mut corrected, &ramp, false, false)
   ok = checkText("text correction (gamma 2.2, contrast 2)", text2.asSlice(), strong) && ok
   return if ok {
     0
