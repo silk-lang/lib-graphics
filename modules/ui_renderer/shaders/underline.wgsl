@@ -5,29 +5,31 @@ struct Underline {
   mask: vec4f,
   // straight alpha
   color: vec4f,
-  // thickness, wavy (1 or 0)
+  // thickness, wavy (1 or 0), the transform
   params: vec4f,
   maskRadii: vec4f,
 }
 @group(0) @binding(1) var<storage, read> underlines: array<Underline>;
 
-struct Varying { @builtin(position) position: vec4f, @location(0) @interpolate(flat) index: u32 }
+struct Varying { @builtin(position) position: vec4f, @location(0) @interpolate(flat) index: u32, @location(1) local: vec2f }
 
 @vertex fn vs(@builtin(vertex_index) v: u32, @builtin(instance_index) index: u32) -> Varying {
   let u = underlines[index];
-  return Varying(corner(cover(u.bounds, u.mask), v), index);
+  let placed = place(u.bounds, u.mask, u32(u.params.z), v);
+  return Varying(placed.position, index, placed.local);
 }
 
 const TAU: f32 = 6.283185307179586;
 
 @fragment fn fs(v: Varying) -> @location(0) vec4f {
   let u = underlines[v.index];
-  let p = v.position.xy;
+  let at = spot(v.position, v.local, u32(u.params.z));
+  let p = at.p;
   let b = u.bounds;
   let thickness = u.params.x;
   var alpha = 0.0;
   if u.params.y == 0.0 {
-    alpha = areaIn(vec4f(b.x, b.y, b.z, min(b.y + thickness, b.w)), p) * areaIn(u.mask, p) * cornerCoverage(u.mask, u.maskRadii, p);
+    alpha = areaInAt(vec4f(b.x, b.y, b.z, min(b.y + thickness, b.w)), p, at.scale) * areaInAt(u.mask, p, at.scale) * cornerCoverageAt(u.mask, u.maskRadii, p, at.scale);
   } else {
     // Distance to the wave, to first order: the vertical gap over the slope's length.
     let amplitude = max((b.w - b.y - thickness) * 0.5, 0.0);
@@ -37,8 +39,9 @@ const TAU: f32 = 6.283185307179586;
     let slope = amplitude * k * cos(k * x);
     let distance = abs(gap) / sqrt(1.0 + slope * slope);
     let clipped = vec4f(max(u.mask.xy, b.xy), min(u.mask.zw, b.zw));
-    alpha = clamp(thickness * 0.5 - distance + 0.5, 0.0, 1.0) * areaIn(clipped, p) * cornerCoverage(u.mask, u.maskRadii, p);
+    alpha = clamp((thickness * 0.5 - distance) * at.scale.y + 0.5, 0.0, 1.0) * areaInAt(clipped, p, at.scale) * cornerCoverageAt(u.mask, u.maskRadii, p, at.scale);
   }
+  alpha = alpha * at.keep;
   if alpha <= 0.0 { discard; }
   return premultiply(u.color) * alpha;
 }

@@ -17,4 +17,4 @@ fn sampleTile(tile: vec4f, bounds: vec4f, p: vec2f) -> vec4f {
   return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
 }
 
-struct Varying { @builtin(position) position: vec4f, @location(0) @interpolate(flat) index: u32 }
+struct Varying { @builtin(position) position: vec4f, @location(0) @interpolate(flat) index: u32, @location(1) local: vec2f }

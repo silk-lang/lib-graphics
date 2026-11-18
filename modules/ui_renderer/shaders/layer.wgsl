@@ -5,11 +5,18 @@
 // the layer inside the alpha of its mask layer, bound in place of the filtered backdrop.
 // A transformed layer (`mapped` set) is sampled bilinearly through `inverse` (rows), which maps a
 // target pixel back to a layer pixel, within the layer pixels `source` (x0, y0, x1, y1).
+// Positions are scene pixels; a page holds only part of the scene, so `origins` gives where pixel
+// (0, 0) of the output (xy) and of the layer's page or texture (zw) lie, `maskOrigin` of the
+// mask's page, and `backdropOrigin` of a composite's backdrop copy and its blur. A backdrop blurred
+// by `blur.wgsl` is `blurSize` pixels that each span `blurScale` pixels of the backdrop copy, and
+// is scaled back up here as that shader's GROW does; `blurScale` 0 is a blur at full size.
 struct Params {
-  op: u32, mode: u32, opacity: u32, backdropEnabled: u32, clip: vec4f, radius: f32, shape: u32, unused: vec2u,
-  inverse0: vec4f, inverse1: vec4f, inverse2: vec4f, source: vec4f, mapped: u32, masked: u32, rounded: u32, pad2: u32,
+  op: u32, mode: u32, opacity: u32, backdropEnabled: u32, clip: vec4f, radius: f32, shape: u32, maskOrigin: vec2u,
+  inverse0: vec4f, inverse1: vec4f, inverse2: vec4f, source: vec4f, mapped: u32, masked: u32, rounded: u32, blurScale: u32,
   // The content mask the layer lands in; its rounded corners clip the layer (radii tl, tr, br, bl).
   maskBounds: vec4f, maskRadii: vec4f,
+  origins: vec4u,
+  backdropOrigin: vec2u, blurSize: vec2u,
 }
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var backdrop: texture_2d<f32>;
@@ -25,20 +32,22 @@ const OP_BLIT: u32 = 2u;
   return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
 }
 
-// `s` inside the mask layer's alpha at `pixel`, as vector.filter's COMPOSITE_IN.
+// `s` inside the mask layer's alpha at scene pixel `pixel`, as vector.filter's COMPOSITE_IN.
 fn inMask(s: vec4u, pixel: vec2u) -> vec4u {
-  let a = bytes(filteredBackdrop, pixel).w;
+  let a = bytes(filteredBackdrop, pixel - params.maskOrigin).w;
   return vec4u(div255(s.x * a), div255(s.y * a), div255(s.z * a), div255(s.w * a));
 }
 
 fn texel(x: f32, y: f32) -> vec4f {
+  let start = vec2f(params.origins.zw);
   let size = vec2f(textureDimensions(layer));
-  let low = max(params.source.xy, vec2f(0.0));
-  let high = min(params.source.zw, size) - 1.0;
+  let low = max(params.source.xy, start);
+  let high = min(params.source.zw, start + size) - 1.0;
   if x < low.x || y < low.y || x > high.x || y > high.y { return vec4f(0.0); }
   let at = vec2u(u32(x), u32(y));
-  if params.masked != 0u { return vec4f(inMask(bytes(layer, at), at)); }
-  return textureLoad(layer, at, 0) * 255.0;
+  let local = at - params.origins.zw;
+  if params.masked != 0u { return vec4f(inMask(bytes(layer, local), at)); }
+  return textureLoad(layer, local, 0) * 255.0;
 }
 
 fn mappedBytes(position: vec2f) -> vec4u {
@@ -51,6 +60,30 @@ fn mappedBytes(position: vec2f) -> vec4u {
   let top = mix(texel(f.x, f.y), texel(f.x + 1.0, f.y), t.x);
   let bottom = mix(texel(f.x, f.y + 1.0), texel(f.x + 1.0, f.y + 1.0), t.x);
   return vec4u(round(clamp(mix(top, bottom, t.y), vec4f(0.0), vec4f(255.0))));
+}
+
+// The layer's bytes at scene pixel `pixel`; transparent outside its page.
+fn layerBytes(pixel: vec2u) -> vec4u {
+  let start = params.origins.zw;
+  let size = textureDimensions(layer);
+  if any(pixel < start) || any(pixel - start >= size) { return vec4u(0u); }
+  return bytes(layer, pixel - start);
+}
+
+fn blurredTexel(p: vec2i) -> vec4f {
+  return textureLoad(filteredBackdrop, vec2u(clamp(p, vec2i(0), vec2i(params.blurSize) - 1)), 0);
+}
+
+// The blurred backdrop at pixel `under` of the backdrop copy, as bytes.
+fn blurred(under: vec2u) -> vec4f {
+  if params.blurScale == 0u { return vec4f(bytes(filteredBackdrop, under)); }
+  let c = (vec2f(under) + 0.5) / f32(params.blurScale) - 0.5;
+  let f = floor(c);
+  let t = c - f;
+  let q = vec2i(f);
+  let top = mix(blurredTexel(q), blurredTexel(q + vec2i(1, 0)), t.x);
+  let bottom = mix(blurredTexel(q + vec2i(0, 1)), blurredTexel(q + vec2i(1, 1)), t.x);
+  return mix(top, bottom, t.y) * 255.0;
 }
 
 // How much of the pixel at `p` the mask's rounded corners keep (common.wgsl's cornerCoverage).
@@ -79,13 +112,15 @@ fn faded(s: vec4u) -> vec4u {
   return vec4u(div255(s.x * params.opacity), div255(s.y * params.opacity), div255(s.z * params.opacity), div255(s.w * params.opacity));
 }
 
-@fragment fn fs(@builtin(position) position: vec4f) -> @location(0) vec4f {
+@fragment fn fs(@builtin(position) output: vec4f) -> @location(0) vec4f {
+  let position = vec4f(output.xy + vec2f(params.origins.xy), output.zw);
   let pixel = vec2u(position.xy);
-  var content = bytes(layer, pixel);
+  var content = vec4u(0u);
   if params.mapped != 0u {
     content = mappedBytes(position.xy);
-  } else if params.masked != 0u {
-    content = inMask(content, pixel);
+  } else {
+    content = layerBytes(pixel);
+    if params.masked != 0u { content = inMask(content, pixel); }
   }
   if params.op == OP_COPY { return vec4f(content) / 255.0; }
   if params.rounded != 0u { content = scaled(content, corner(position.xy)); }
@@ -93,7 +128,8 @@ fn faded(s: vec4u) -> vec4u {
     if params.opacity == 255u { return vec4f(content) / 255.0; }
     return vec4f(faded(content)) / 255.0;
   }
-  var b = bytes(backdrop, pixel);
+  let under = pixel - params.backdropOrigin;
+  var b = bytes(backdrop, under);
   if params.backdropEnabled != 0u {
     let halfSize = (params.clip.zw - params.clip.xy) * 0.5;
     let p = position.xy - (params.clip.xy + halfSize);
@@ -105,7 +141,7 @@ fn faded(s: vec4u) -> vec4u {
       distance = (length(normalized) - 1.0) * min(halfSize.x, halfSize.y);
     }
     let coverage = clamp(0.5 - distance, 0.0, 1.0) * f32(params.opacity) / 255.0;
-    b = vec4u(round(mix(vec4f(b), vec4f(bytes(filteredBackdrop, pixel)), coverage)));
+    b = vec4u(round(mix(vec4f(b), blurred(under), coverage)));
   }
   if params.opacity == 0u || content.w == 0u { return vec4f(b) / 255.0; }
   var s = content;

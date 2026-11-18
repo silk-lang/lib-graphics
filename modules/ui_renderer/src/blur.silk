@@ -1,0 +1,405 @@
+//! A fast Gaussian blur for layer effects (`shaders/blur.wgsl`), as Skia draws large blurs.
+//!
+//! A blur of a wide standard deviation reads hundreds of pixels for each one it writes when it
+//! runs at the image's own size. Instead the image is halved until the standard deviation left
+//! is between 2 and 4 pixels, blurred there with a kernel of at most 25 pixels each way, and
+//! scaled back up bilinearly. Halving and scaling up blur too, so the kernel is narrowed by what
+//! they add. The cost follows the image's pixels, whatever the radius: about a third of a pass
+//! over the image for the halvings, and two passes over an image at least sixteen times smaller.
+//!
+//! The halved images live in a pyramid of textures kept across frames, sized from the image
+//! blurred. A blur narrower than [`FAST_SIGMA`] stays with `gpu_scene.FilterRenderer`.
+import silk.collections.list { List }
+import silk.core.ownership { Copy }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+import silk.num.f32
+import silk.num.u32
+import silk.num.usize
+import webgpu.resources as gpu
+import webgpu.resources { Buffer, CommandEncoder, Queue, RenderPipeline, TextureView }
+import webgpu.runtime { Device, GpuError }
+import webgpu.descriptors { BindGroupDescriptor, RenderPassColorAttachment, RenderPassDescriptor }
+import webgpu_sys.generated_webgpu as flags
+import gpu_scene.renderer { entry, storage, textureEntry }
+import gpu_scene.filter { FilterImage }
+
+const OP_HALVE: u32 = 0
+
+const OP_ROWS: u32 = 1
+
+const OP_COLUMNS: u32 = 2
+
+const OP_GROW: u32 = 3
+
+/// Bytes of `shaders/blur.wgsl`'s `Params`.
+const PARAMS_BYTES: usize = 112
+
+/// The widest kernel `shaders/blur.wgsl` takes, each way from its center.
+const MAX_RADIUS: u32 = 12
+
+/// The narrowest standard deviation, in pixels, that [`BlurPyramid`] blurs.
+pub const FAST_SIGMA: f32 = 4.0
+
+/// Frames the pyramid keeps textures no blur used.
+const IDLE_FRAMES: u32 = 120
+
+fn writeU32(bytes: &mut [u8], offset: usize, value: u32) -> () {
+  bytes[offset] = u32.toU8(value & 255)
+  bytes[offset + 1] = u32.toU8(u32.shiftRight(value, 8) & 255)
+  bytes[offset + 2] = u32.toU8(u32.shiftRight(value, 16) & 255)
+  bytes[offset + 3] = u32.toU8(u32.shiftRight(value, 24) & 255)
+}
+
+/// `e ^ -x` for `x >= 0` (the standard library has no exp yet): a short series for a small
+/// power, squared back up.
+fn decay(x: f32) -> f32 {
+  let mut v = x
+  let mut squarings: u32 = 0
+  while v > 0.0625 {
+    v = v / 2.0
+    squarings = squarings + 1
+  }
+  let mut r = 1.0 - v + v * v / 2.0 - v * v * v / 6.0 + v * v * v * v / 24.0
+  while squarings > 0 {
+    r = r * r
+    squarings = squarings - 1
+  }
+  return r
+}
+
+/// The uniform of one pass: `image` is `x0, y0, x1, y1` in the source texture.
+fn header(op: u32, count: u32, clamped: bool, image: [u32; 4], originX: u32, originY: u32) -> [u8; PARAMS_BYTES] {
+  let mut bytes: [u8; PARAMS_BYTES] = [0; PARAMS_BYTES]
+  writeU32(&mut bytes, 0, op)
+  writeU32(&mut bytes, 4, count)
+  writeU32(&mut bytes, 8, if clamped { 1 } else { 0 })
+  writeU32(&mut bytes, 16, image[0])
+  writeU32(&mut bytes, 20, image[1])
+  writeU32(&mut bytes, 24, image[2])
+  writeU32(&mut bytes, 28, image[3])
+  writeU32(&mut bytes, 32, originX)
+  writeU32(&mut bytes, 36, originY)
+  return bytes
+}
+
+/// One pass of `shaders/blur.wgsl` onto `width` x `height` pixels of `out` at (`x`, `y`); the
+/// rest of `out` is cleared.
+effect fn pass(
+  device: &Device,
+  queue: &Queue,
+  encoder: &mut CommandEncoder,
+  pipeline: &RenderPipeline,
+  out: &TextureView,
+  source: &TextureView,
+  params: &Buffer,
+  bytes: &[u8; PARAMS_BYTES],
+  x: u32,
+  y: u32,
+  width: u32,
+  height: u32,
+) -> ()
+  ! GpuError {
+  queue.writeBuffer(params, 0, bytes)
+  let layout = run pipeline.getBindGroupLayout(0)
+  let entries = [entry(0, params), textureEntry(1, source)]
+  let group = run gpu.createBindGroup(
+    device,
+    &BindGroupDescriptor.default().withLayout(&layout).withEntries(&entries),
+  )
+  let mut color = RenderPassColorAttachment.default().withView(out)
+  color.setLoadOp(flags.WGPULoadOp_Clear)
+  color.setStoreOp(flags.WGPUStoreOp_Store)
+  let colors = [color]
+  let mut recording = run encoder.beginRenderPass(
+    &RenderPassDescriptor.default().withColorAttachments(&colors),
+  )
+  recording.setPipeline(pipeline)
+  recording.setBindGroup(0, &group, &[])
+  recording.setScissorRect(x, y, width, height)
+  recording.draw(3, 1, 0, 0)
+  recording.end()
+}
+
+/// A blurred image in a [`BlurPyramid`]: `width` x `height` pixels at the origin of a pyramid
+/// texture, each spanning `scale` pixels of the image that was blurred.
+pub struct Blurred {
+  level: usize,
+  pub scale: u32,
+  pub width: u32,
+  pub height: u32,
+}
+
+impl Copy for Blurred {}
+
+/// The textures and uniforms of the fast blurs of a renderer. Keep one per renderer.
+pub struct BlurPyramid {
+  /// `levels[i]` holds an image halved `i` times, for `i` from 1. `levels[0]` is where the
+  /// kernel's first pass writes, as large as `levels[1]`.
+  levels: List<FilterImage>,
+  /// One uniform per pass of a frame.
+  params: List<Buffer>,
+  /// How many of `params` this frame has used.
+  used: usize,
+  /// The most halvings of a blur this frame.
+  deepest: usize,
+  /// How many frames in a row have left some of `levels` unused.
+  idle: u32,
+}
+
+impl BlurPyramid {
+  pub fn make() -> BlurPyramid {
+    return BlurPyramid {
+      levels: List<FilterImage>.make(),
+      params: List<Buffer>.make(),
+      used: 0,
+      deepest: 0,
+      idle: 0,
+    }
+  }
+
+  /// Starts a frame. Textures that no blur has used for [`IDLE_FRAMES`] frames are dropped.
+  pub fn begin(self: &mut Self) -> () {
+    let keep = if self.deepest == 0 { 0 } else { self.deepest + 1 }
+    if self.levels.length() > keep {
+      self.idle = self.idle + 1
+      if self.idle > IDLE_FRAMES {
+        while self.levels.length() > keep {
+          drop self.levels.pop()
+        }
+        self.idle = 0
+      }
+    } else {
+      self.idle = 0
+    }
+    self.used = 0
+    self.deepest = 0
+  }
+
+  /// Drops every texture, as when the images to blur change size.
+  pub fn clear(self: &mut Self) -> () {
+    self.levels.clear()
+    self.idle = 0
+  }
+
+  /// How many times a blur of standard deviation `sigma` halves its image: until the standard
+  /// deviation left is under [`FAST_SIGMA`]. Zero for a blur the pyramid does not take.
+  pub fn halvings(sigma: f32) -> u32 {
+    let mut left = sigma
+    let mut count: u32 = 0
+    while left >= FAST_SIGMA && count < 12 {
+      left = left / 2.0
+      count = count + 1
+    }
+    return count
+  }
+
+  /// Blurs `width` x `height` pixels of `input` at (`x`, `y`) with standard deviation `sigma`,
+  /// at least [`FAST_SIGMA`]. Past the image's edges it reads the edge pixels again when
+  /// `clamped`, else transparent pixels. Draw the result with [`BlurPyramid.grow`], or read it
+  /// from [`BlurPyramid.view`] the way `grow` does.
+  pub effect fn blur(
+    self: &mut Self,
+    device: &Device,
+    queue: &Queue,
+    encoder: &mut CommandEncoder,
+    pipeline: &RenderPipeline,
+    input: &FilterImage,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    sigma: f32,
+    clamped: bool,
+  ) -> Blurred
+    ! GpuError | OutOfMemoryError
+    ? &mut Allocator {
+    let halvings = BlurPyramid.halvings(sigma)
+    let deepest = u32.toUsize(halvings)
+    run self.fit(device, input, deepest)
+    let first = run self.slots(device, queue, deepest + 2)
+    if deepest > self.deepest {
+      self.deepest = deepest
+    }
+    let levels = self.levels.asSlice()
+    let params = self.params.asSlice()
+    let mut w = width
+    let mut h = height
+    let mut level: usize = 1
+    while level <= deepest {
+      let halfWidth = (w + 1) / 2
+      let halfHeight = (h + 1) / 2
+      let image: [u32; 4] = if level == 1 { [x, y, x + w, y + h] } else { [0, 0, w, h] }
+      let bytes = header(OP_HALVE, 0, clamped, image, 0, 0)
+      run pass(
+        device,
+        queue,
+        &mut encoder,
+        pipeline,
+        &levels[level].view,
+        if level == 1 { &input.view } else { &levels[level - 1].view },
+        &params[first + level - 1],
+        &bytes,
+        0,
+        0,
+        halfWidth,
+        halfHeight,
+      )
+      w = halfWidth
+      h = halfHeight
+      level = level + 1
+    }
+
+    // Halving `n` times averages blocks of `scale` pixels, and scaling back up spreads each
+    // pixel over a tent `scale` wide each way: variances (scale^2 - 1) / 12 and scale^2 / 6.
+    let scale = u32.shiftLeft(1, halvings)
+    let k = u32.toF32(scale)
+    let own = (k * k - 1.0) / 12.0 + k * k / 6.0
+    let left = f32.sqrt(f32.max(sigma * sigma - own, k * k)) / k
+    let mut radius = f32.toU32(f32.ceil(left * 3.0))
+    if radius > MAX_RADIUS {
+      radius = MAX_RADIUS
+    }
+    let mut weights: [f32; 16] = [0.0; 16]
+    let mut total: f32 = 0.0
+    let mut i: u32 = 0
+    while i <= radius {
+      let t = u32.toF32(i)
+      let weight = decay(t * t / (2.0 * left * left))
+      weights[u32.toUsize(i)] = weight
+      total = total + if i == 0 { weight } else { weight * 2.0 }
+      i = i + 1
+    }
+    let mut rows = header(OP_ROWS, radius, clamped, [0, 0, w, h], 0, 0)
+    i = 0
+    while i <= radius {
+      writeU32(&mut rows, 48 + u32.toUsize(i) * 4, f32.toBits(weights[u32.toUsize(i)] / total))
+      i = i + 1
+    }
+    let mut columns = rows
+    writeU32(&mut columns, 0, OP_COLUMNS)
+    run pass(
+      device,
+      queue,
+      &mut encoder,
+      pipeline,
+      &levels[0].view,
+      &levels[deepest].view,
+      &params[first + deepest],
+      &rows,
+      0,
+      0,
+      w,
+      h,
+    )
+    run pass(
+      device,
+      queue,
+      &mut encoder,
+      pipeline,
+      &levels[deepest].view,
+      &levels[0].view,
+      &params[first + deepest + 1],
+      &columns,
+      0,
+      0,
+      w,
+      h,
+    )
+    return Blurred { level: deepest, scale: scale, width: w, height: h }
+  }
+
+  /// Draws `blurred` scaled back up onto `width` x `height` pixels of `out` at (`x`, `y`), the
+  /// pixels that were blurred; the rest of `out` becomes transparent.
+  pub effect fn grow(
+    self: &mut Self,
+    device: &Device,
+    queue: &Queue,
+    encoder: &mut CommandEncoder,
+    pipeline: &RenderPipeline,
+    out: &FilterImage,
+    blurred: Blurred,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+  ) -> ()
+    ! GpuError | OutOfMemoryError
+    ? &mut Allocator {
+    let slot = run self.slots(device, queue, 1)
+    let bytes = header(OP_GROW, blurred.scale, true, [0, 0, blurred.width, blurred.height], x, y)
+    run pass(
+      device,
+      queue,
+      &mut encoder,
+      pipeline,
+      &out.view,
+      &self.levels.asSlice()[blurred.level].view,
+      &self.params.asSlice()[slot],
+      &bytes,
+      x,
+      y,
+      width,
+      height,
+    )
+  }
+
+  /// The bytes of the pyramid's textures.
+  pub fn bytes(self: &Self) -> u64 {
+    let levels = self.levels.asSlice()
+    let mut total: u64 = 0
+    let mut i: usize = 0
+    while i < levels.length {
+      total = total + u32.toU64(levels[i].width) * u32.toU64(levels[i].height) * 4
+      i = i + 1
+    }
+    return total
+  }
+
+  /// The texture that holds `blurred`, until the next blur of as many halvings.
+  pub fn view(self: &Self, blurred: Blurred) -> &TextureView {
+    return &self.levels.asSlice()[blurred.level].view
+  }
+
+  /// Makes `levels[0 ..= deepest]` the sizes the halvings of `input` take.
+  effect fn fit(self: &mut Self, device: &Device, input: &FilterImage, deepest: usize) -> ()
+    ! GpuError | OutOfMemoryError
+    ? &mut Allocator {
+    let mut width = input.width
+    let mut height = input.height
+    let mut level: usize = 0
+    while level <= deepest {
+      if level != 1 {
+        width = (width + 1) / 2
+        height = (height + 1) / 2
+      }
+      if level < self.levels.length() {
+        let image = &self.levels.asSlice()[level]
+        let fits = image.width == width && image.height == height
+        drop image
+        if !fits {
+          let made = run FilterImage.make(device, width, height)
+          let levels = self.levels.asMutSlice()
+          levels[level] = move made
+        }
+      } else {
+        let made = run FilterImage.make(device, width, height)
+        run self.levels.append(move made)
+      }
+      level = level + 1
+    }
+  }
+
+  /// Takes `count` uniforms of the frame, making those it lacks; returns the first one's index.
+  effect fn slots(self: &mut Self, device: &Device, queue: &Queue, count: usize) -> usize
+    ! GpuError | OutOfMemoryError
+    ? &mut Allocator {
+    let first = self.used
+    self.used = self.used + count
+    let zeros: [u8; PARAMS_BYTES] = [0; PARAMS_BYTES]
+    while self.params.length() < self.used {
+      let buffer = run storage(device, queue, b"ui blur params", &zeros, flags.WGPUBufferUsage_Uniform)
+      run self.params.append(move buffer)
+    }
+    return first
+  }
+}

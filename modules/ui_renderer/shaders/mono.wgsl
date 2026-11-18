@@ -8,12 +8,15 @@ struct MonoSprite {
   color: vec4f,
   tile: vec4f,
   maskRadii: vec4f,
+  // x is the transform.
+  extra: vec4f,
 }
 @group(0) @binding(1) var<storage, read> sprites: array<MonoSprite>;
 
 @vertex fn vs(@builtin(vertex_index) v: u32, @builtin(instance_index) index: u32) -> Varying {
   let s = sprites[index];
-  return Varying(corner(cover(s.bounds, s.mask), v), index);
+  let placed = place(s.bounds, s.mask, u32(s.extra.x), v);
+  return Varying(placed.position, index, placed.local);
 }
 
 fn brightness(color: vec3f) -> f32 {
@@ -32,9 +35,10 @@ fn correctText(alpha: f32, color: vec3f) -> f32 {
 
 @fragment fn fs(v: Varying) -> @location(0) vec4f {
   let s = sprites[v.index];
-  let p = v.position.xy;
+  let at = spot(v.position, v.local, u32(s.extra.x));
+  let p = at.p;
   let clipped = vec4f(max(s.mask.xy, s.bounds.xy), min(s.mask.zw, s.bounds.zw));
-  let clip = areaIn(clipped, p) * cornerCoverage(s.mask, s.maskRadii, p);
+  let clip = areaInAt(clipped, p, at.scale) * cornerCoverageAt(s.mask, s.maskRadii, p, at.scale) * at.keep;
   if clip <= 0.0 { discard; }
   let sample = sampleTile(s.tile, s.bounds, p).r;
   let alpha = clamp(correctText(sample, clamp(s.color.rgb, vec3f(0.0), vec3f(1.0))), 0.0, 1.0);

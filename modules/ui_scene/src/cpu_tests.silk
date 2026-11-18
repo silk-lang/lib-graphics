@@ -2,7 +2,8 @@
 import atlas.atlas { Atlas, AtlasError, AtlasOptions, Kind }
 import color
 import effects { LayerEffects, DropShadow, saturate }
-import silk.color.color { ColorSpace, Interpolation }
+import silk.color.color { ColorSpace, HueInterpolation, Interpolation }
+import silk.color.rgba { Rgba }
 import cpu { AtlasPixels, CpuRenderer }
 import path_cache { PathCache }
 import primitives {
@@ -316,6 +317,39 @@ effect fn gradients() -> ()
   let mut cpu = CpuRenderer.make()
   run cpu.draw(&handed, &pixels, &mut drawn)
   run Testing.expect(drawn.pixel(45, 5).r == 255 && drawn.pixel(55, 5).b == 255, "stops: copied")
+
+  // Stops mixed in other spaces, pair by pair, clipped to sRGB as browsers do: red to blue the
+  // long way round Oklch passes green; white has no hue, so blue to white the long way goes once
+  // round from blue's. A stop outside
+  // the sRGB gamut keeps its chroma until the mix.
+  let mut spaced = Scene.make()
+  let three = run spaced.colorStops(
+    &[
+      ColorStop { color: color.rgb(0xff0000), offset: 0.0 },
+      ColorStop { color: color.rgb(0x0000ff), offset: 0.5 },
+      ColorStop { color: color.rgb(0xffffff), offset: 1.0 },
+    ],
+  )
+  let wide = run spaced.colorStops(
+    &[
+      ColorStop { color: Rgba<f32>.new(1.2, 0.4, -0.1, 1.0), offset: 0.0 },
+      ColorStop { color: color.rgb(0x0000ff), offset: 1.0 },
+    ],
+  )
+  let longer = Interpolation.withHue(ColorSpace.Oklch, HueInterpolation.Longer)
+  let arc = across(three, longer)
+  let lab = across(wide, Interpolation.new(ColorSpace.Oklab))
+  drop run spaced.quad(Quad.fill(rect(0.0, 0.0, 100.0, 10.0), window(), arc))
+  drop run spaced.quad(Quad.fill(rect(0.0, 20.0, 100.0, 10.0), window(), lab))
+  let sp = run render(&mut spaced, &pixels)
+  let green = sp.pixel(24, 5)
+  run Testing.expect(near(green.r, 0, 4) && near(green.g, 147, 6) && near(green.b, 0, 4), "stops: Oklch longer hue")
+  let pale = sp.pixel(74, 5)
+  run Testing.expect(near(pale.r, 216, 6) && near(pale.g, 151, 6) && near(pale.b, 0, 4), "stops: white's hue is missing, so blue's goes round once")
+  let edge = sp.pixel(49, 5)
+  run Testing.expect(edge.b > 250 && edge.r < 8, "stops: each pair has its own ramp")
+  let warm = sp.pixel(24, 25)
+  run Testing.expect(near(warm.r, 232, 4) && near(warm.g, 115, 4) && near(warm.b, 123, 4), "stops: an extended sRGB stop")
 }
 
 fn stops(
@@ -338,6 +372,24 @@ fn stops(
       radiusY: ry,
       repeating: repeating,
       stops: range,
+      interpolation: Interpolation.new(ColorSpace.Srgb),
+    },
+  }
+}
+
+/// Stops `range` left to right across their box, mixed in `interpolation`.
+fn across(range: StopRange, interpolation: Interpolation) -> Background {
+  return Background.Stops {
+    gradient: StopsGradient {
+      shape: GradientShape.Linear,
+      angle: 90.0,
+      centerX: 0.0,
+      centerY: 0.0,
+      radiusX: 0.0,
+      radiusY: 0.0,
+      repeating: false,
+      stops: range,
+      interpolation: interpolation,
     },
   }
 }

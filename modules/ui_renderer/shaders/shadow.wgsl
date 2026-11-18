@@ -12,17 +12,18 @@ struct Shadow {
   boxRadii: vec4f,
   // Everything the shadow can touch.
   reach: vec4f,
-  // sigma, inset (1 or 0)
+  // sigma, inset (1 or 0), the transform
   params: vec4f,
   maskRadii: vec4f,
 }
 @group(0) @binding(1) var<storage, read> shadows: array<Shadow>;
 
-struct Varying { @builtin(position) position: vec4f, @location(0) @interpolate(flat) index: u32 }
+struct Varying { @builtin(position) position: vec4f, @location(0) @interpolate(flat) index: u32, @location(1) local: vec2f }
 
 @vertex fn vs(@builtin(vertex_index) v: u32, @builtin(instance_index) index: u32) -> Varying {
   let s = shadows[index];
-  return Varying(corner(cover(s.reach, s.mask), v), index);
+  let placed = place(s.reach, s.mask, u32(s.params.z), v);
+  return Varying(placed.position, index, placed.local);
 }
 
 const SQRT_HALF: f32 = 0.7071067811865476;
@@ -52,14 +53,15 @@ fn blurAlongX(x: f32, y: f32, sigma: f32, radius: f32, half: vec2f) -> f32 {
 
 @fragment fn fs(v: Varying) -> @location(0) vec4f {
   let s = shadows[v.index];
-  let p = v.position.xy;
-  let clip = areaIn(s.mask, p) * cornerCoverage(s.mask, s.maskRadii, p);
+  let at = spot(v.position, v.local, u32(s.params.z));
+  let p = at.p;
+  let clip = areaInAt(s.mask, p, at.scale) * cornerCoverageAt(s.mask, s.maskRadii, p, at.scale) * at.keep;
   if clip <= 0.0 { discard; }
   let sigma = s.params.x;
   var alpha = 0.0;
   if s.shape.x < s.shape.z && s.shape.y < s.shape.w {
     if sigma < 0.05 {
-      alpha = coverage(roundedRectSdf(p, s.shape, s.shapeRadii));
+      alpha = roundedCoverage(p, s.shape, s.shapeRadii, at.scale);
     } else {
       let half = (s.shape.zw - s.shape.xy) * 0.5;
       let q = p - (s.shape.xy + half);
@@ -76,7 +78,7 @@ fn blurAlongX(x: f32, y: f32, sigma: f32, radius: f32, half: vec2f) -> f32 {
     }
   }
   if s.params.y != 0.0 {
-    alpha = (1.0 - alpha) * coverage(roundedRectSdf(p, s.box, s.boxRadii));
+    alpha = (1.0 - alpha) * roundedCoverage(p, s.box, s.boxRadii, at.scale);
   }
   return premultiply(s.color) * (clamp(alpha, 0.0, 1.0) * clip);
 }

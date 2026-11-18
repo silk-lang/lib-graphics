@@ -1,0 +1,121 @@
+//! The instanced draws of one frame: each bind group is made once and reused by every batch that
+//! reads the same buffers, a pipeline or bind group is set only when it changes, and a draw whose
+//! instances follow the last draw's joins it. A frame of thousands of small batches (a layer drawn
+//! through a transform is a batch or two of its own) then records a draw per run of instances,
+//! not a bind group, a pipeline and a draw per batch.
+import silk.collections.list { List }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+import silk.num.u32
+import silk.num.u64
+import silk.num.usize
+import webgpu.resources { BindGroup, RenderPassEncoder, RenderPipeline }
+
+const NONE: usize = 0xffffffff
+
+/// In `Draws.pipeline`: no pipeline is set.
+const NO_PIPELINE: u32 = 0xffffffff
+
+/// The bind groups of a frame, and what the pass being recorded has set and has yet to draw.
+pub struct Draws {
+  groups: List<BindGroup>,
+  /// What each of `groups` binds (see [`Draws.key`]).
+  keys: List<u64>,
+  /// The index in `groups` of the bind group the pass has set, or `NONE`.
+  bound: usize,
+  /// The pipeline the pass has set (see [`Draws.draw`]), or `NO_PIPELINE`.
+  pipeline: u32,
+  /// A draw not recorded yet: `count` instances from `first`, 0 for none.
+  first: u32,
+  count: u32,
+}
+
+impl Draws {
+  pub fn make() -> Draws {
+    return Draws {
+      groups: List<BindGroup>.make(),
+      keys: List<u64>.make(),
+      bound: NONE,
+      pipeline: NO_PIPELINE,
+      first: 0,
+      count: 0,
+    }
+  }
+
+  /// What a bind group binds: the pipelines of surface kind `set`, primitive kind `kind`, the
+  /// globals uniform `globals` and atlas texture `texture`.
+  pub fn key(set: u32, kind: u32, globals: u32, texture: u32) -> u64 {
+    return u32.toU64(set) | u64.shiftLeft(u32.toU64(kind), 4) | u64.shiftLeft(u32.toU64(globals), 8)
+      | u64.shiftLeft(u32.toU64(texture), 36)
+  }
+
+  /// The frame's bind group for `key`, or `None`-like `usize.MAX` when it has none yet.
+  pub fn find(self: &Self, key: u64) -> usize {
+    let keys = self.keys.asSlice()
+    let mut i: usize = 0
+    while i < keys.length {
+      if keys[i] == key {
+        return i
+      }
+      i = i + 1
+    }
+    return usize.MAX
+  }
+
+  /// Keeps `group` as the frame's bind group for `key`; returns its index.
+  pub effect fn add(self: &mut Self, key: u64, group: BindGroup) -> usize
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    run self.groups.append(move group)
+    run self.keys.append(key)
+    return self.groups.length() - 1
+  }
+
+  /// Starts a pass, or goes on after something else set a pipeline or a bind group in it:
+  /// nothing is taken to be set.
+  pub fn begin(self: &mut Self) -> () {
+    self.bound = NONE
+    self.pipeline = NO_PIPELINE
+    self.count = 0
+  }
+
+  /// Draws instances `first .. first + count` (six vertices each) with `pipeline`, which `id`
+  /// names, and bind group `group` of the frame. The draw is recorded by a later draw that does
+  /// not join it, or by [`Draws.flush`].
+  pub fn draw(
+    self: &mut Self,
+    pass: &mut RenderPassEncoder<'_>,
+    pipeline: &RenderPipeline,
+    id: u32,
+    group: usize,
+    first: u32,
+    count: u32,
+  ) -> () {
+    if count == 0 {
+      return
+    }
+    if self.count != 0 && self.pipeline == id && self.bound == group && self.first + self.count == first {
+      self.count = self.count + count
+      return
+    }
+    self.flush(&mut pass.*)
+    if self.pipeline != id {
+      pass.setPipeline(pipeline)
+      self.pipeline = id
+    }
+    if self.bound != group {
+      pass.setBindGroup(0, &self.groups.asSlice()[group], &[])
+      self.bound = group
+    }
+    self.first = first
+    self.count = count
+  }
+
+  /// Records the draw that waits, if one does. Call it before the pass ends, and before its
+  /// scissor changes or anything else is drawn in it.
+  pub fn flush(self: &mut Self, pass: &mut RenderPassEncoder<'_>) -> () {
+    if self.count != 0 {
+      pass.draw(6, self.count, 0, self.first)
+      self.count = 0
+    }
+  }
+}
