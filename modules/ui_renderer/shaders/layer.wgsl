@@ -177,7 +177,7 @@ fn faded(s: vec4u) -> vec4u {
     let coverage = clamp(0.5 - distance, 0.0, 1.0) * f32(params.opacity) / 255.0;
     b = vec4u(round(mix(vec4f(b), blurred(under), coverage)));
   }
-  if params.opacity == 0u || content.w == 0u { return vec4f(b) / 255.0; }
+  if (params.opacity == 0u || content.w == 0u) && !clearsUnder(params.mode) { return vec4f(b) / 255.0; }
   var s = content;
   if params.opacity != 255u { s = faded(s); }
   return vec4f(blend(b, s, params.mode)) / 255.0;

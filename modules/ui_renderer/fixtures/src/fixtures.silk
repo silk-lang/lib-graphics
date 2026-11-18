@@ -39,7 +39,7 @@ import ui_scene.scene { Scene }
 import ui_scene.scroll { ScrollAxis, ScrollLink, ScrollPosition }
 import vector.geometry { Affine }
 import vector.geometry_error { GeometryError }
-import vector.layer { BLEND_MULTIPLY, BLEND_SCREEN }
+import vector.layer { BLEND_MULTIPLY, BLEND_PLUS_LIGHTER, BLEND_SCREEN, BLEND_SOURCE_IN, BLEND_SOURCE_OUT, BLEND_XOR }
 import vector.path { Path as VectorPath }
 import vector.strips { EVENODD, NONZERO }
 import vector.stroke { CAP_ROUND, JOIN_ROUND, Stroke }
@@ -245,6 +245,7 @@ pub effect fn cards(scene: &mut Scene, tiles: &mut Tiles) -> ()
         opacity: 1.0,
         cornerRadii: Radii.uniform(6.0),
         grayscale: i == 1,
+        nearest: i == 2,
       },
     )
     let mut check = VectorPath.make()
@@ -510,6 +511,7 @@ pub effect fn nested(scene: &mut Scene, tiles: &mut Tiles) -> ()
       opacity: 0.7,
       cornerRadii: Radii.uniform(0.0),
       grayscale: false,
+      nearest: false,
     },
   )
   let mut cache = PathCache.make()
@@ -544,6 +546,19 @@ pub effect fn nested(scene: &mut Scene, tiles: &mut Tiles) -> ()
   edge.borderWidths = Insets<f32>.uniform(2.0)
   edge.borderColor = color.white()
   drop run scene.quad(edge)
+  // The Porter-Duff modes, each in a group of its own over a backdrop disc.
+  let modes = [BLEND_PLUS_LIGHTER, BLEND_SOURCE_IN, BLEND_SOURCE_OUT, BLEND_XOR]
+  let mut m: usize = 0
+  while m < 4 {
+    let x = 8.0 + usize.toF32(m) * 36.0
+    drop run scene.pushIsolatedLayer(rect(x, 160.0, 32.0, 18.0), window(), Isolation { opacity: 1.0, blend: 0 })
+    drop run scene.quad(Quad.fill(rect(x, 160.0, 20.0, 18.0), window(), Background.solid(color.rgba(0x2563ebc0))))
+    drop run scene.pushIsolatedLayer(rect(x + 8.0, 160.0, 24.0, 18.0), window(), Isolation { opacity: 0.9, blend: modes[m] })
+    drop run scene.quad(Quad.fill(rect(x + 10.0, 161.0, 22.0, 16.0), window(), Background.solid(color.rgba(0xf97316d0))))
+    run scene.popLayer()
+    run scene.popLayer()
+    m = m + 1
+  }
 }
 
 /// [`nested`] (isolated layers, glyphs, an image, paths) scrolled in a scroll group of the

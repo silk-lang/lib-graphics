@@ -413,7 +413,8 @@ pub struct GlyphSprite {
 impl Copy for GlyphSprite {}
 
 /// A premultiplied color tile from a polychrome atlas texture: an image, a color glyph or a color
-/// icon, stretched over `bounds` with bilinear sampling and clipped to `cornerRadii`.
+/// icon, stretched over `bounds` with bilinear sampling (or nearest, see `nearest`) and clipped to
+/// `cornerRadii`.
 pub struct ImageSprite {
   /// Clockwise quarter turns applied to the sampled tile (0 through 3).
   pub quarterTurns: u32,
@@ -427,6 +428,8 @@ pub struct ImageSprite {
   pub cornerRadii: Radii,
   /// Draw as luminance only (Rec. 709 weights on the sRGB channels).
   pub grayscale: bool,
+  /// Sample the nearest texel instead of bilinear: CSS `image-rendering: pixelated`.
+  pub nearest: bool,
 }
 
 impl Copy for ImageSprite {}

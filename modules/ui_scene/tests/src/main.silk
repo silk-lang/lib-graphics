@@ -216,6 +216,7 @@ effect fn cards(scene: &mut Scene, pixels: &mut AtlasPixels) -> ()
         opacity: 1.0,
         cornerRadii: Radii.uniform(6.0),
         grayscale: i == 1,
+        nearest: false,
       },
     )
 

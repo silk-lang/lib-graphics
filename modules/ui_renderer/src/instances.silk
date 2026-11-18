@@ -411,11 +411,7 @@ effect fn packImage(bytes: &mut List<u8>, s: ImageSprite, transform: f32) -> ()
   run push4(
     &mut bytes,
     s.opacity,
-    if s.grayscale {
-      1.0
-    } else {
-      0.0
-    },
+    imageFlags(s.grayscale, s.nearest),
     u32.toF32(s.quarterTurns % 4),
     transform,
   )
@@ -615,4 +611,12 @@ impl Instances {
     run pushU32(&mut self.runs, 0)
     run pushU32(&mut self.runs, 0)
   }
+}
+
+/// An image's shader flags: 1 grayscale, 2 nearest sampling (`image-rendering: pixelated`).
+fn imageFlags(grayscale: bool, nearest: bool) -> f32 {
+  let mut flags: f32 = 0.0
+  if grayscale { flags = flags + 1.0 }
+  if nearest { flags = flags + 2.0 }
+  return flags
 }

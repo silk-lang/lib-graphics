@@ -42,6 +42,6 @@ fn scale(c: vec4u, m: u32) -> vec4u {
   }
   let b = bytes(backdrop, pixel);
   let level = div255(m * params.opacity);
-  if level == 0u || content.w == 0u { return vec4f(b) / 255.0; }
+  if (level == 0u || content.w == 0u) && !clearsUnder(params.mode) { return vec4f(b) / 255.0; }
   return vec4f(blend(b, scale(content, level), params.mode)) / 255.0;
 }

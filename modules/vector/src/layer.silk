@@ -53,6 +53,22 @@ pub const BLEND_COLOR: u8 = 14
 
 pub const BLEND_LUMINOSITY: u8 = 15
 
+/// Porter-Duff `plus-lighter`: source and backdrop added, clamped. The modes from here on
+/// composite instead of blending: they are not B(Cb, Cs) under source-over.
+pub const BLEND_PLUS_LIGHTER: u8 = 16
+
+/// Porter-Duff source-in: the source where the backdrop is, nothing elsewhere.
+pub const BLEND_SOURCE_IN: u8 = 17
+
+/// Porter-Duff source-out: the source where the backdrop is not, nothing elsewhere.
+pub const BLEND_SOURCE_OUT: u8 = 18
+
+/// Porter-Duff xor: each where the other is not.
+pub const BLEND_XOR: u8 = 19
+
+/// Whether `mode` changes the backdrop under a transparent source pixel.
+pub fn clearsUnder(mode: u8) -> bool { return mode == BLEND_SOURCE_IN || mode == BLEND_SOURCE_OUT }
+
 /// One coverage byte per pixel, row major.
 pub struct Mask {
   maskWidth: u32,
@@ -371,7 +387,7 @@ pub fn compositeMasked(
     let mut x: u32 = 0
     while x < width {
       let m = div255(u8.toU32(mask.at(x, y)) * level)
-      if m != 0 {
+      if m != 0 || clearsUnder(mode) {
         let j = u32.toUsize(y) * layerStride + u32.toUsize(x) * 4
         let s = scale(
           Rgba8 { r: source[j], g: source[j + 1], b: source[j + 2], a: source[j + 3] },
@@ -403,7 +419,7 @@ pub fn compositeWithin(
   x1: u32,
   y1: u32,
 ) -> () {
-  if opacity == 0 {
+  if opacity == 0 && !clearsUnder(mode) {
     return
   }
   let width = minU32(minU32(target.width(), layer.width()), x1)
@@ -422,7 +438,7 @@ pub fn compositeWithin(
     let mut x: u32 = x0
     while x < width {
       let j = u32.toUsize(y) * layerStride + u32.toUsize(x) * 4
-      if source[j + 3] != 0 {
+      if source[j + 3] != 0 || clearsUnder(mode) {
         let s = scale(
           Rgba8 { r: source[j], g: source[j + 1], b: source[j + 2], a: source[j + 3] },
           level,
@@ -578,11 +594,33 @@ fn mixPixel(d: &mut [u8], i: usize, s: Rgba8, mode: u8) -> () {
   d[i + 3] = s.a
 }
 
+/// The Porter-Duff modes from [`BLEND_PLUS_LIGHTER`] on, as feComposite computes them.
+fn composePixel(d: &mut [u8], i: usize, s: Rgba8, mode: u8) -> () {
+  if mode == BLEND_PLUS_LIGHTER {
+    d[i] = u32.toU8(minU32(u8.toU32(s.r) + u8.toU32(d[i]), 255))
+    d[i + 1] = u32.toU8(minU32(u8.toU32(s.g) + u8.toU32(d[i + 1]), 255))
+    d[i + 2] = u32.toU8(minU32(u8.toU32(s.b) + u8.toU32(d[i + 2]), 255))
+    d[i + 3] = u32.toU8(minU32(u8.toU32(s.a) + u8.toU32(d[i + 3]), 255))
+    return
+  }
+  let ba = u8.toU32(d[i + 3])
+  let fs = if mode == BLEND_SOURCE_IN { ba } else { 255 - ba }
+  let fb = if mode == BLEND_XOR { 255 - u8.toU32(s.a) } else { 0 }
+  d[i] = u32.toU8(minU32(div255(u8.toU32(s.r) * fs) + div255(u8.toU32(d[i]) * fb), 255))
+  d[i + 1] = u32.toU8(minU32(div255(u8.toU32(s.g) * fs) + div255(u8.toU32(d[i + 1]) * fb), 255))
+  d[i + 2] = u32.toU8(minU32(div255(u8.toU32(s.b) * fs) + div255(u8.toU32(d[i + 2]) * fb), 255))
+  d[i + 3] = u32.toU8(minU32(div255(u8.toU32(s.a) * fs) + div255(ba * fb), 255))
+}
+
 /// Blends premultiplied `s` onto the pixel at byte offset `i`:
 /// `co = cs (1 - ab) + cb (1 - as) + as ab B(Cb, Cs)`, `ao = as + ab (1 - as)`.
 fn blendPixel(d: &mut [u8], i: usize, s: Rgba8, mode: u8) -> () {
   if mode == BLEND_NORMAL {
     over(&mut d, i, s)
+    return
+  }
+  if mode >= BLEND_PLUS_LIGHTER {
+    composePixel(&mut d, i, s, mode)
     return
   }
   if s.a == 0 {
@@ -976,7 +1014,7 @@ pub fn compositeWithinLinearRgb(
   x1: u32,
   y1: u32,
 ) -> () {
-  if opacity == 0 {
+  if opacity == 0 && !clearsUnder(mode) {
     return
   }
   let width = minU32(minU32(target.width(), layer.width()), x1)
@@ -1022,7 +1060,7 @@ pub fn compositeMaskedLinearRgb(
     let mut x: u32 = 0
     while x < width {
       let m = div255(u8.toU32(mask.at(x, y)) * level)
-      if m != 0 {
+      if m != 0 || clearsUnder(mode) {
         let j = u32.toUsize(y) * layerStride + u32.toUsize(x) * 4
         let s = Rgba8 { r: source[j], g: source[j + 1], b: source[j + 2], a: source[j + 3] }
         blendLinearPixel(&mut d, u32.toUsize(y) * stride + u32.toUsize(x) * 4, s, mode, m)
@@ -1034,6 +1072,10 @@ pub fn compositeMaskedLinearRgb(
 }
 
 fn blendLinearPixel(d: &mut [u8], i: usize, source: Rgba8, mode: u8, mask: u32) -> () {
+  if mode >= BLEND_PLUS_LIGHTER {
+    composePixel(&mut d, i, scale(source, mask), mode)
+    return
+  }
   if source.a == 0 || mask == 0 {
     return
   }
