@@ -1,3 +1,4 @@
+import silk.num.u32
 import silk.cli.task { Task, TaskError }
 import silk.collections.bytes { Bytes }
 import silk.collections.list { List }
@@ -20,7 +21,7 @@ import silk.system.filesystem { FileError, FileSystem, Path, TemporaryDirectory 
 import silk.system.host_input { HostInput, HostInputError }
 import silk.system.monotonic_clock { MonotonicClock, ReadyWatch }
 import silk.system.monotonic_clock_native { OsMonotonicClock }
-import silk.system.system_clock { Instant, SystemClock }
+import silk.time.mark { Mark }
 import silk.system.subprocess { Subprocess, SubprocessError, SpawnOptions, Stdio, ExitStatus }
 import silk.text.string { String, InvalidUtf8 }
 import browser_support { pathText, rootPath }
@@ -88,17 +89,17 @@ pub effect fn sleep(milliseconds: u64) -> () {
   let mut clock = OsMonotonicClock.make()
   run MonotonicClock.waitFor(milliseconds * 1000000) |> Effect.provideMut<MonotonicClock>(&mut clock)
 }
-effect fn deadline(milliseconds: u64) -> Instant {
+effect fn deadline(milliseconds: u64) -> Mark {
   let mut clock = OsMonotonicClock.make()
   let now = run MonotonicClock.now() |> Effect.provideMut<MonotonicClock>(&mut clock)
   return MonotonicClock.deadlineAfter(&now, milliseconds * 1000000)
 }
-effect fn ready(fd: i32, writing: bool, until: &Instant) -> () ! TaskError | OutOfMemoryError ? &mut Allocator {
+effect fn ready(fd: i32, writing: bool, until: &Mark) -> () ! TaskError | OutOfMemoryError ? &mut Allocator {
   let mut clock = OsMonotonicClock.make()
   let watch = if writing { ReadyWatch.forWrite(i32.toUsize(fd)) } else { ReadyWatch.forRead(i32.toUsize(fd)) }
   let mut watches = [watch]
-  let copy = SystemClock.make(SystemClock.seconds(until), SystemClock.nanoseconds(until))
-  let count = run MonotonicClock.waitReady(&mut watches, Option<Instant>.some(move copy)) |> Effect.provideMut<MonotonicClock>(&mut clock)
+  let copy = Mark.make(until.*.seconds(), u32.toI64(until.*.subsecondNanoseconds()))
+  let count = run MonotonicClock.waitReady(&mut watches, Option<Mark>.some(move copy)) |> Effect.provideMut<MonotonicClock>(&mut clock)
   if count == 0 { run Task.abort("Chrome DevTools Protocol timed out") }
   if watches[0].invalid() { run Task.abort("Chrome DevTools Protocol descriptor closed") }
 }
@@ -311,7 +312,7 @@ fn takeField(document: Value, key: string) -> Value {
     _ => Value.Null
   }
 }
-effect fn receive(browser: &mut Browser, until: &Instant) -> Value ! TaskError | OutOfMemoryError ? &mut Allocator {
+effect fn receive(browser: &mut Browser, until: &Mark) -> Value ! TaskError | OutOfMemoryError ? &mut Allocator {
   while true {
     let all = Bytes.asSlice(&browser.pending)
     let mut at = browser.scanned

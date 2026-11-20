@@ -10,7 +10,7 @@ import silk.num.u64
 import silk.num.i64
 import silk.system.monotonic_clock { MonotonicClock }
 import silk.system.monotonic_clock_native { OsMonotonicClock }
-import silk.system.system_clock { Instant, SystemClock }
+import silk.time.mark { Mark }
 import silk.system.filesystem { FileSystem, FileError, Path as FilePath }
 import silk.system.filesystem_native { OsFileSystem }
 import silk.system.host_input { HostInput, HostInputError }
@@ -83,10 +83,10 @@ effect fn circle(path: &mut Path, cx: f64, cy: f64, r: f64) -> ()
   run path.circle(cx, cy, r)
 }
 
-fn nanos(start: &Instant, end: &Instant) -> i64 {
-  return (SystemClock.seconds(end) - SystemClock.seconds(start)) * 1000000000
-    + SystemClock.nanoseconds(end)
-    - SystemClock.nanoseconds(start)
+fn nanos(start: &Mark, end: &Mark) -> i64 {
+  return (end.*.seconds() - start.*.seconds()) * 1000000000
+    + u32.toI64(end.*.subsecondNanoseconds())
+    - u32.toI64(start.*.subsecondNanoseconds())
 }
 
 effect fn save(fileName: string, bytes: &[u8]) -> ()
