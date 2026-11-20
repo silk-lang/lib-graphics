@@ -1,0 +1,104 @@
+//! Surface placements: where a scene draws its GPU canvases, and whether one could show in a
+//! compositor layer of its own (nothing drawn later covers it, a rectangular clip of one radius,
+//! drawn straight into the window).
+import scene { Scene }
+import scene_tests { quadAt, rect, window }
+import primitives { ContentMask, Isolation, SurfaceSprite }
+import placement { SurfacePlacement, surfacePlacements }
+import radii { Radii }
+import color
+import silk.collections.list { List }
+import silk.core.effect { Effect }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+import silk.testing.testing { Testing, AssertionError }
+
+effect fn placementsBody() -> ()
+  ! AssertionError<'static> | OutOfMemoryError
+  ? &mut Allocator {
+  let mut out = List<SurfacePlacement>.make()
+
+  // A canvas over a background, with nothing above it: it could be a layer.
+  let mut scene = Scene.make()
+  drop run scene.quad(quadAt(0.0, 0.0, 800.0, 600.0, color.white()))
+  drop run scene.surface(SurfaceSprite.make(rect(100.0, 50.0, 400.0, 200.0), window(), 7, 400, 200))
+  run scene.finish()
+  run surfacePlacements(&scene, &mut out)
+  run Testing.expect(out.length() == 1, "one surface sprite")
+  let p = out.asSlice()[0]
+  run Testing.expect(p.surface == 7 && p.layer == 0, "surface 7, drawn in the window")
+  run Testing.expect(p.clip.xMin == 100.0 && p.clip.yMin == 50.0 && p.clip.xMax == 500.0 && p.clip.yMax == 250.0, "its clip is its bounds")
+  run Testing.expect(p.cornerRadius == 0.0 && p.axisAligned && !p.occluded, "square, axis aligned, uncovered")
+  run Testing.expect(p.layerable(), "so it could be a layer")
+
+  // Something drawn after it over it: not a layer. Beside it: still one.
+  let mut covered = Scene.make()
+  drop run covered.surface(SurfaceSprite.make(rect(100.0, 50.0, 400.0, 200.0), window(), 7, 400, 200))
+  drop run covered.quad(quadAt(450.0, 200.0, 100.0, 100.0, color.white()))
+  run covered.finish()
+  run surfacePlacements(&covered, &mut out)
+  run Testing.expect(out.asSlice()[0].occluded && !out.asSlice()[0].layerable(), "a quad over its corner covers it")
+  let mut beside = Scene.make()
+  drop run beside.surface(SurfaceSprite.make(rect(100.0, 50.0, 400.0, 200.0), window(), 7, 400, 200))
+  drop run beside.quad(quadAt(600.0, 50.0, 100.0, 100.0, color.white()))
+  run beside.finish()
+  run surfacePlacements(&beside, &mut out)
+  run Testing.expect(!out.asSlice()[0].occluded && out.asSlice()[0].layerable(), "a quad beside it does not")
+
+  // Rounded corners: one radius on its own clip keeps it a layer; a mask cutting a rounded clip
+  // does not.
+  let mut rounded = Scene.make()
+  let mut sprite = SurfaceSprite.make(rect(100.0, 50.0, 400.0, 200.0), window(), 3, 400, 200)
+  sprite.cornerRadii = Radii.uniform(12.0)
+  drop run rounded.surface(sprite)
+  let mut cut = SurfaceSprite.make(rect(100.0, 300.0, 400.0, 200.0), ContentMask.new(rect(150.0, 300.0, 200.0, 200.0)), 4, 400, 200)
+  cut.cornerRadii = Radii.uniform(12.0)
+  drop run rounded.surface(cut)
+  let mut uneven = SurfaceSprite.make(rect(600.0, 50.0, 100.0, 100.0), window(), 5, 100, 100)
+  uneven.cornerRadii = Radii.uniform(8.0)
+  uneven.cornerRadii.x.topLeft = 2.0
+  drop run rounded.surface(uneven)
+  run rounded.finish()
+  run surfacePlacements(&rounded, &mut out)
+  run Testing.expect(out.length() == 3, "three surface sprites")
+  let mut seen: u32 = 0
+  let all = out.asSlice()
+  let mut i: usize = 0
+  while i < all.length {
+    let q = all[i]
+    if q.surface == 3 {
+      run Testing.expect(q.cornerRadius == 12.0 && q.layerable(), "one radius on its clip")
+      seen = seen + 1
+    }
+    if q.surface == 4 {
+      run Testing.expect(q.cornerRadius < 0.0 && !q.layerable(), "a mask cutting its rounded clip")
+      run Testing.expect(q.clip.xMin == 150.0 && q.clip.xMax == 350.0, "clipped by the mask")
+      seen = seen + 1
+    }
+    if q.surface == 5 {
+      run Testing.expect(q.cornerRadius < 0.0 && !q.layerable(), "corners of different radii")
+      seen = seen + 1
+    }
+    i = i + 1
+  }
+  run Testing.expect(seen == 3, "each surface once")
+
+  // Inside an isolated layer (group opacity, filters): not a layer of its own.
+  let mut isolated = Scene.make()
+  drop run isolated.pushIsolatedLayer(
+    rect(0.0, 0.0, 800.0, 600.0),
+    window(),
+    Isolation { opacity: 0.5, blend: 0 },
+  )
+  drop run isolated.surface(SurfaceSprite.make(rect(100.0, 50.0, 400.0, 200.0), window(), 9, 400, 200))
+  run isolated.popLayer()
+  run isolated.finish()
+  run surfacePlacements(&isolated, &mut out)
+  run Testing.expect(out.length() == 1 && out.asSlice()[0].layer != 0, "drawn in an isolated layer")
+  run Testing.expect(!out.asSlice()[0].layerable(), "so not a layer of its own")
+}
+
+test effect fn surfacePlacementsSayWhichCanvasesCouldBeLayers() -> ()
+  ! AssertionError<'static> | OutOfMemoryError {
+  let mut allocator = Allocator.systemAllocatorProvider()
+  run placementsBody() |> Effect.provideMut<Allocator>(&mut allocator)
+}
