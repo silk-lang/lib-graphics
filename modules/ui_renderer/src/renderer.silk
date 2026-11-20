@@ -151,6 +151,22 @@ const NOT_PLANNED: u32 = 0xffffffff
 /// In `UiRenderer.assigned`: a plain layer with nothing to show.
 const PLANNED_EMPTY: u32 = 0xfffffffe
 
+/// Whether two lists of scroll positions move the same nodes to the same places.
+fn sameScrolls(a: &[ScrollPosition], b: &[ScrollPosition]) -> bool {
+  if a.length != b.length {
+    return false
+  }
+  let mut i: usize = 0
+  while i < a.length {
+    if a[i].node != b[i].node || a[i].x != b[i].x || a[i].y != b[i].y || a[i].minX != b[i].minX
+      || a[i].maxX != b[i].maxX || a[i].minY != b[i].minY || a[i].maxY != b[i].maxY {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
 /// Whether `format` is a target the renderer can draw to: RGBA8Unorm or BGRA8Unorm, the formats
 /// WebGPU surfaces offer. (The `-srgb` variants would re-encode the already sRGB-encoded output.)
 pub fn supportsFormat(format: u32) -> bool {
@@ -851,6 +867,15 @@ pub struct UiRenderer {
   placed: Placements,
   /// The textures surface sprites sample (see [`UiRenderer.setSurface`]).
   surfaces: List<SurfaceTexture>,
+  /// Whether the next draw may keep the instances of the last one (see
+  /// [`UiRenderer.reuseInstances`]).
+  reuse: bool,
+  /// Whether the instance buffers hold a whole frame, and the size and scroll positions that
+  /// frame was packed for.
+  held: bool,
+  heldWidth: u32,
+  heldHeight: u32,
+  heldScrolls: List<ScrollPosition>,
 }
 
 impl UiRenderer {
@@ -925,6 +950,11 @@ impl UiRenderer {
       newer: List<ScrollPosition>.make(),
       placed: Placements.make(),
       surfaces: List<SurfaceTexture>.make(),
+      reuse: false,
+      held: false,
+      heldWidth: 0,
+      heldHeight: 0,
+      heldScrolls: List<ScrollPosition>.make(),
     }
   }
 
@@ -1048,6 +1078,18 @@ impl UiRenderer {
 
   pub fn setTextSettings(self: &mut Self, settings: TextSettings) -> () {
     self.text = settings
+    self.held = false
+  }
+
+  /// Says that the next draw is of the scene this renderer drew last, unchanged: a frame drawn
+  /// again because something outside the scene changed, such as the picture of a surface
+  /// sprite ([`UiRenderer.setSurface`]). That draw then keeps the instances already on the GPU
+  /// instead of packing and uploading every primitive again, when its size and the scroll
+  /// positions ([`UiRenderer.setScrolls`]) are also those of the last draw; otherwise it is an
+  /// ordinary draw. It holds for one draw. The scene is the caller's word: a different scene
+  /// drawn after this call shows the last one's primitives.
+  pub fn reuseInstances(self: &mut Self) -> () {
+    self.reuse = true
   }
 
   /// Clears `target` (`width` x `height`, of the renderer's format) to `clear`, draws layer 0 of
@@ -1385,6 +1427,13 @@ impl UiRenderer {
   ) -> ()
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
+    let reuse = self.reuse
+    self.reuse = false
+    if reuse && self.held && width == self.heldWidth && height == self.heldHeight
+      && sameScrolls(self.newer.asSlice(), self.heldScrolls.asSlice()) {
+      return
+    }
+    self.held = false
     run self.placed.resolve(scene.scrollGroups(), scene.scrolls(), self.newer.asSlice())
     run self.planInline(scene)
     run self.instances.pack(scene, &self.placed, self.inline.asSlice())
@@ -1509,6 +1558,11 @@ impl UiRenderer {
       TRANSFORM_BYTES,
       storage,
     )
+    self.heldWidth = width
+    self.heldHeight = height
+    self.heldScrolls.clear()
+    run self.heldScrolls.appendSlice(self.newer.asSlice())
+    self.held = true
   }
 
   /// Finds the layers of `scene` that are drawn straight onto their parent's surface, through

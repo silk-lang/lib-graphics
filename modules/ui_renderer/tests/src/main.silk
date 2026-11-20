@@ -381,6 +381,21 @@ effect fn checkSurfaces(
   ok = near(pixelAt(picture, 116, 32), 0, 0, 0, 0) && ok
   ok = near(pixelAt(picture, 90, 90), 0, 0, 0, 0) && ok
 
+  // A new picture in the surface's texture shows in a frame drawn from the instances the
+  // renderer already holds: nothing of the scene is packed again.
+  let repainted: [u8; 16] = [0, 255, 255, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]
+  let again = TexelCopyTextureInfo.default().withTexture(&surface)
+  queue.writeTexture(&again, &repainted, &layout, &extent(2, 2))
+  drop again
+  renderer.reuseInstances()
+  run renderer.draw(device, queue, &scene, &textures, &view, WIDTH, HEIGHT, color.transparent())
+  run device.checkErrors()
+  let reused = run readBack(device, queue, &target, bgra)
+  ok = near(pixelAt(reused.asSlice(), 32, 32), 0, 255, 255, 255) && ok
+  ok = near(pixelAt(reused.asSlice(), 64, 64), 255, 255, 255, 255) && ok
+  ok = near(pixelAt(reused.asSlice(), 17, 17), 0, 0, 0, 0) && ok
+  ok = near(pixelAt(reused.asSlice(), 90, 90), 0, 0, 0, 0) && ok
+
   // Removed, the surface draws nothing.
   renderer.removeSurface(7)
   run renderer.draw(device, queue, &scene, &textures, &view, WIDTH, HEIGHT, color.transparent())
@@ -446,6 +461,17 @@ effect fn program() -> i32
       "drawn again",
       first.asSlice(),
       second.asSlice(),
+      Tolerance { max: 0, share: 0.0, mean: 0.0 },
+    )
+      && ok
+    // And once more from the instances the renderer holds, without packing the scene again.
+    rgba.reuseInstances()
+    let third = run renderOnGpu(&device, &queue, &mut rgba, &f, false, false)
+    ok = compare(
+      f.name,
+      "drawn again, instances kept",
+      second.asSlice(),
+      third.asSlice(),
       Tolerance { max: 0, share: 0.0, mean: 0.0 },
     )
       && ok
