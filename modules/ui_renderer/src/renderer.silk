@@ -68,7 +68,7 @@ import gpu_scene.filter { FilterImage, FilterRenderer }
 import vector.filter { BlurPlan, Region }
 import vector.filter as filtering
 import ui_scene.effects { LayerEffects }
-import ui_scene.primitives { ContentMask, LayerSprite }
+import ui_scene.primitives { ContentMask, LayerSprite, SURFACE_TEXTURE_BASE, surfaceOfTexture }
 import ui_scene.scene { PrimitiveKind, Scene, NO_MASK }
 import ui_scene.scroll { Placements, ScrollPosition }
 import atlas_textures { GpuAtlas }
@@ -756,6 +756,12 @@ effect fn beginPass<'e>(
   return run encoder.beginRenderPass(&RenderPassDescriptor.default().withColorAttachments(&colors))
 }
 
+/// A texture registered for the surface sprites of one id.
+struct SurfaceTexture {
+  id: u32,
+  view: TextureView,
+}
+
 /// Draws UI scenes onto one target format. Keep one per window and reuse it every frame.
 pub struct UiRenderer {
   format: u32,
@@ -843,6 +849,8 @@ pub struct UiRenderer {
   newer: List<ScrollPosition>,
   /// The scroll groups of the scene drawn last, placed.
   placed: Placements,
+  /// The textures surface sprites sample (see [`UiRenderer.setSurface`]).
+  surfaces: List<SurfaceTexture>,
 }
 
 impl UiRenderer {
@@ -916,6 +924,7 @@ impl UiRenderer {
       transforms: List<u8>.make(),
       newer: List<ScrollPosition>.make(),
       placed: Placements.make(),
+      surfaces: List<SurfaceTexture>.make(),
     }
   }
 
@@ -952,6 +961,48 @@ impl UiRenderer {
       }
       Stage<Layered, MakingLayered> other => move other
     }
+  }
+
+  /// Draws surface sprites of `id` (`ui_scene.primitives.SurfaceSprite`) from `view`: a 2D
+  /// float-sampleable view of premultiplied RGBA or BGRA texels the renderer does not own, such as
+  /// a GPU canvas. It replaces any view registered for `id`. The renderer keeps a reference to
+  /// the view until it is replaced or removed; keep the texture readable while frames that draw
+  /// it are encoded and submitted.
+  pub effect fn setSurface(self: &mut Self, id: u32, view: &TextureView) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    self.removeSurface(id)
+    run self.surfaces.append(SurfaceTexture { id: id, view: view.dup() })
+  }
+
+  /// Forgets surface `id`: its sprites draw nothing.
+  pub fn removeSurface(self: &mut Self, id: u32) -> () {
+    let mut i: usize = 0
+    while i < self.surfaces.length() {
+      if self.surfaces.asSlice()[i].id == id {
+        drop self.surfaces.remove(i)
+        return
+      }
+      i = i + 1
+    }
+  }
+
+  /// The index in `surfaces` of the view registered for texture index `texture` of an image
+  /// batch, or `usize.MAX` when it names no registered surface.
+  fn surfaceIndex(self: &Self, texture: u32) -> usize {
+    if texture < SURFACE_TEXTURE_BASE {
+      return usize.MAX
+    }
+    let id = surfaceOfTexture(texture)
+    let list = self.surfaces.asSlice()
+    let mut i: usize = 0
+    while i < list.length {
+      if list[i].id == id {
+        return i
+      }
+      i = i + 1
+    }
+    return usize.MAX
   }
 
   /// Draws the scroll groups of every following scene at `positions` where one is for their
@@ -3046,7 +3097,8 @@ impl UiRenderer {
           }
         }
         PrimitiveKind.Image => {
-          if u32.toUsize(batch.texture) < atlas.textureCount() {
+          let surface = self.surfaceIndex(batch.texture)
+          if u32.toUsize(batch.texture) < atlas.textureCount() || surface != usize.MAX {
             let key = Draws.key(set, kind, globalsId, batch.texture)
             let mut group = draws.find(key)
             if group == usize.MAX {
@@ -3054,7 +3106,14 @@ impl UiRenderer {
               let entries = [
                 entry(0, globals),
                 entry(1, &b[IMAGES]),
-                textureEntry(2, atlas.view(u32.toUsize(batch.texture))),
+                textureEntry(
+                  2,
+                  if surface != usize.MAX {
+                    &self.surfaces.asSlice()[surface].view
+                  } else {
+                    atlas.view(u32.toUsize(batch.texture))
+                  },
+                ),
                 entry(8, &b[TRANSFORMS]),
               ]
               group = run draws.add(key, run gpu.createBindGroup(

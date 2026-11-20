@@ -39,6 +39,12 @@ Every batch of the scene is one instanced draw of six vertices per instance, as 
 | Path | `shaders/path.wgsl` | `vector` coverage strips in gpu_scene's run layout (4-row bands, a word of coverage per column), placed at the sprite's integer origin; bands start at the sprite's own `y`. |
 | Layer | `shaders/layer.wgsl` | Plain isolated layers (opacity, a transform, a mask layer) are drawn into shared textures and blitted inside their parent's pass. Every other layer is drawn into a pooled RGBA8 texture and composited with gpu_scene's `blend.wgsl` (all `vector.layer` blend modes) and the group opacity, with optional layer/backdrop blur and color filters. See [Isolated layers](#isolated-layers). |
 
+Surface sprites (`ui_scene.primitives.SurfaceSprite`) are image batches that sample a texture the
+caller registered with `UiRenderer.setSurface(id, view)` instead of an atlas page: premultiplied
+RGBA or BGRA, any size. The sprite shader clamps a source rectangle to the bound texture, so
+`SurfaceSprite.whole` covers a surface whose size the scene does not know. A sprite whose id has no
+registered view draws nothing. `removeSurface(id)` forgets one.
+
 Two-stop linear gradients take any `silk.color` interpolation. sRGB gradients are mixed in the
 shader; every other interpolation (linear sRGB, Oklab, Oklch and the other polar spaces with their
 hue arcs, wide gamut spaces) gets a 256-entry ramp of premultiplied RGBA8 words, sampled on the

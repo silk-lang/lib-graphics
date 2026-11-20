@@ -36,7 +36,11 @@ import ui_renderer.text { TextSettings }
 import vector.geometry_error { GeometryError }
 import gpu_scene.renderer { extent }
 import ui_fixtures.cases { COUNT, Fixture, Tolerance, fixture }
-import ui_fixtures.fixtures { WIDTH, HEIGHT }
+import ui_fixtures.fixtures { WIDTH, HEIGHT, rect, window }
+import ui_scene.primitives { SurfaceSprite }
+import ui_scene.radii { Radii }
+import ui_scene.scene { Scene }
+import atlas.atlas { Atlas, AtlasOptions }
 
 effect fn renderTarget(device: &Device, format: u32) -> Texture
   ! GpuError {
@@ -287,6 +291,120 @@ fn checkText(name: string<'static>, gpu: &[u8], settings: TextSettings) -> bool 
   return worst <= 1
 }
 
+/// The RGBA bytes of pixel `(x, y)` of a picture `readBack` gave.
+fn pixelAt(picture: &[u8], x: u32, y: u32) -> [u8; 4] {
+  let at = u32.toUsize((y * WIDTH + x) * 4)
+  return [picture[at], picture[at + 1], picture[at + 2], picture[at + 3]]
+}
+
+fn near(actual: [u8; 4], r: u32, g: u32, b: u32, a: u32) -> bool {
+  let want = [r, g, b, a]
+  let mut i: usize = 0
+  while i < 4 {
+    let have = u8.toU32(actual[i])
+    let d = if have > want[i] {
+      have - want[i]
+    } else {
+      want[i] - have
+    }
+    if d > 10 {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+/// A surface sprite draws the texture registered for its id, clipped to its rounded corners, in
+/// both target formats; an unregistered surface draws nothing. The texture is a 2 x 2 RGBA8 one
+/// the renderer does not own: red, green over blue, white (premultiplied, opaque).
+effect fn checkSurfaces(
+  device: &Device,
+  queue: &Queue,
+  renderer: &mut UiRenderer,
+  bgra: bool,
+) -> bool
+  ! GpuError | OutOfMemoryError
+  ? &mut Allocator {
+  let mut descriptor = TextureDescriptor.default().withLabel(b"ui test surface")
+  descriptor.setSize(extent(2, 2))
+  descriptor.setFormat(flags.WGPUTextureFormat_RGBA8Unorm)
+  descriptor.setDimension(flags.WGPUTextureDimension_2D)
+  descriptor.setMipLevelCount(1)
+  descriptor.setSampleCount(1)
+  descriptor.setUsage(flags.WGPUTextureUsage_TextureBinding | flags.WGPUTextureUsage_CopyDst)
+  let surface = run gpu.createTexture(device, &descriptor)
+  let pixels: [u8; 16] = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]
+  let destination = TexelCopyTextureInfo.default().withTexture(&surface)
+  let mut layout: TexelCopyBufferLayout = TexelCopyBufferLayout.default()
+  layout.setBytesPerRow(8)
+  layout.setRowsPerImage(2)
+  queue.writeTexture(&destination, &pixels, &layout, &extent(2, 2))
+  drop destination
+  let surfaceView = run surface.createView(&TextureViewDescriptor.default())
+
+  let mut scene = Scene.make()
+
+  // Surface 7 over a 64 pixel square with round corners, named whole; surface 9 has no texture.
+  let mut sprite = SurfaceSprite.whole(rect(16.0, 16.0, 64.0, 64.0), window(), 7)
+  sprite.cornerRadii = Radii.uniform(16.0)
+  drop run scene.surface(sprite)
+  drop run scene.surface(SurfaceSprite.make(rect(100.0, 16.0, 32.0, 32.0), window(), 9, 2, 2))
+  run scene.finish()
+
+  let atlas = Atlas.make(AtlasOptions.default())
+  let mut textures = GpuAtlas.make()
+  run textures.sync(device, &atlas)
+  let format = if bgra {
+    flags.WGPUTextureFormat_BGRA8Unorm
+  } else {
+    flags.WGPUTextureFormat_RGBA8Unorm
+  }
+  let target = run renderTarget(device, format)
+  let view = run target.createView(&TextureViewDescriptor.default())
+  run renderer.setSurface(7, &surfaceView)
+  run renderer.draw(device, queue, &scene, &textures, &view, WIDTH, HEIGHT, color.transparent())
+  run device.checkErrors()
+  let drawn = run readBack(device, queue, &target, bgra)
+  let picture = drawn.asSlice()
+  let mut ok = true
+
+  // Texel centers land a quarter and three quarters of the way across the square, half a pixel
+  // before these pixel centers, so a little of the neighbour mixes in.
+  ok = near(pixelAt(picture, 32, 32), 255, 0, 0, 255) && ok
+  ok = near(pixelAt(picture, 64, 32), 0, 255, 0, 255) && ok
+  ok = near(pixelAt(picture, 32, 64), 0, 0, 255, 255) && ok
+  ok = near(pixelAt(picture, 64, 64), 255, 255, 255, 255) && ok
+
+  // The rounded corner clips, the unregistered surface and the rest of the target stay clear.
+  ok = near(pixelAt(picture, 17, 17), 0, 0, 0, 0) && ok
+  ok = near(pixelAt(picture, 116, 32), 0, 0, 0, 0) && ok
+  ok = near(pixelAt(picture, 90, 90), 0, 0, 0, 0) && ok
+
+  // Removed, the surface draws nothing.
+  renderer.removeSurface(7)
+  run renderer.draw(device, queue, &scene, &textures, &view, WIDTH, HEIGHT, color.transparent())
+  run device.checkErrors()
+  let cleared = run readBack(device, queue, &target, bgra)
+  ok = near(pixelAt(cleared.asSlice(), 32, 32), 0, 0, 0, 0) && ok
+  StderrWriter.print(
+    "surface sprite ({}): {}\n",
+    &(
+      if bgra {
+        "bgra8"
+      } else {
+        "rgba8"
+      },
+      if ok {
+        "ok"
+      } else {
+        "FAIL"
+      }
+    ),
+  )
+  return ok
+}
+
 effect fn program() -> i32
   ! GpuError | OutOfMemoryError | GeometryError | AtlasError
   ? &mut Allocator {
@@ -333,6 +451,9 @@ effect fn program() -> i32
       && ok
     again = again + 1
   }
+
+  ok = (run checkSurfaces(&device, &queue, &mut rgba, false)) && ok
+  ok = (run checkSurfaces(&device, &queue, &mut bgra, true)) && ok
 
   // Text correction on, against its CPU formula. The text ramp is the last fixture.
   let ramp = run fixture(COUNT - 1)
