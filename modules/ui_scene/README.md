@@ -22,6 +22,10 @@ depends on a GPU, so it builds for wasm32 too.
   - `Underline`: straight or wavy.
   - `GlyphSprite`: a tinted coverage tile from a monochrome `modules/atlas` texture.
   - `ImageSprite`: a premultiplied color tile, with opacity, corner radii and grayscale.
+  - `SurfaceSprite`: a texture the scene does not own (a GPU canvas, a video frame), named by a
+    `u32` id. `Scene.surface` adds it as an image whose texture index is
+    `SURFACE_TEXTURE_BASE + id`, so it batches, clips, scrolls and layers as an image does. The
+    renderer binds the texture registered for the id; the CPU reference draws nothing for it.
   - `PathSprite`: `vector` strip coverage at an integer origin (made by `path_cache`).
   - Every primitive has a `ContentMask`, the rectangle it is clipped to.
 - `effects`: `LayerEffects` for isolated-layer blur, backdrop blur, and color adjustments.
@@ -30,7 +34,7 @@ depends on a GPU, so it builds for wasm32 too.
   `color.fromColor(c)` to gamut-map any `silk.color.color.Color`. `color.mix` interpolates stops.
 - `bounds_tree`: `BoundsTree`, a balanced bounding-volume tree that gives a rectangle one more than
   the highest order of anything it overlaps, as GPUI's `BoundsTree`.
-- `scene`: `Scene` with `quad`, `shadow`, `underline`, `glyph`, `image`, `pathCoverage`,
+- `scene`: `Scene` with `quad`, `shadow`, `underline`, `glyph`, `image`, `surface`, `pathCoverage`,
   `pushLayer`/`pushIsolatedLayer`/`pushEffectLayer`/`pushTransformLayer`/`pushMaskLayer`/`popLayer`, `replay`, `finish`, and per-layer `batches`.
 - `path_cache`: `PathCache` rasterizes `vector` paths (fills and strokes) into a scene and keeps
   their coverage across frames.

@@ -53,6 +53,7 @@ import primitives {
   ContentMask,
   GlyphSprite,
   ImageSprite,
+  SurfaceSprite,
   Isolation,
   LayerSprite,
   PathSprite,
@@ -1124,6 +1125,18 @@ impl Scene {
     let index = run self.current().images.push(sprite, order, sprite.tile.texture.index, group)
     run self.log(5, index)
     return order
+  }
+
+  /// Adds a surface sprite and returns its draw order, or 0 when it is hidden. It joins the
+  /// layer's image sprites ([`Scene.images`]), in a batch whose texture is
+  /// `SURFACE_TEXTURE_BASE` plus the surface id.
+  pub effect fn surface(self: &mut Self, sprite: SurfaceSprite) -> u32
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    if sprite.source.xMin >= sprite.source.xMax || sprite.source.yMin >= sprite.source.yMax {
+      return 0
+    }
+    return run self.image(sprite.image())
   }
 
   /// Adds path coverage already rasterized at pixel origin `(x, y)`: `strips` and `fills` relative

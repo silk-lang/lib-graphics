@@ -2,8 +2,15 @@
 // tile, read with textureLoad so no texel outside the tile is touched.
 @group(0) @binding(2) var atlas: texture_2d<f32>;
 
+// `tile` clipped to the texture: a surface sprite may name more than the texture holds.
+fn clipTile(tile: vec4f) -> vec4f {
+  let dims = vec2f(textureDimensions(atlas));
+  return vec4f(min(tile.xy, dims), min(tile.zw, dims));
+}
+
 // Tile `tile` (texel rectangle xMin, yMin, xMax, yMax) stretched over `bounds`, at pixel center `p`.
-fn sampleTile(tile: vec4f, bounds: vec4f, p: vec2f) -> vec4f {
+fn sampleTile(whole: vec4f, bounds: vec4f, p: vec2f) -> vec4f {
+  let tile = clipTile(whole);
   let size = tile.zw - tile.xy;
   let uv = (p - bounds.xy) * size / (bounds.zw - bounds.xy);
   let f = clamp(uv - 0.5, vec2f(0.0), size - 1.0);
@@ -18,7 +25,8 @@ fn sampleTile(tile: vec4f, bounds: vec4f, p: vec2f) -> vec4f {
 }
 
 // The texel of `tile` under pixel center `p`, clamped to the tile: `image-rendering: pixelated`.
-fn nearestTile(tile: vec4f, bounds: vec4f, p: vec2f) -> vec4f {
+fn nearestTile(whole: vec4f, bounds: vec4f, p: vec2f) -> vec4f {
+  let tile = clipTile(whole);
   let size = tile.zw - tile.xy;
   let uv = (p - bounds.xy) * size / (bounds.zw - bounds.xy);
   let i = clamp(floor(uv), vec2f(0.0), size - 1.0);
