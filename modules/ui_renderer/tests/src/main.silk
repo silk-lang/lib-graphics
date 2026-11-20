@@ -396,6 +396,21 @@ effect fn checkSurfaces(
   ok = near(pixelAt(reused.asSlice(), 17, 17), 0, 0, 0, 0) && ok
   ok = near(pixelAt(reused.asSlice(), 90, 90), 0, 0, 0, 0) && ok
 
+  // Shown elsewhere (a compositor layer of its own), the surface draws nothing here; shown here
+  // again, it draws without a new setSurface.
+  renderer.showSurfaceElsewhere(7, true)
+  ok = renderer.surfaceElsewhere(7) && ok
+  run renderer.draw(device, queue, &scene, &textures, &view, WIDTH, HEIGHT, color.transparent())
+  run device.checkErrors()
+  let away = run readBack(device, queue, &target, bgra)
+  ok = near(pixelAt(away.asSlice(), 32, 32), 0, 0, 0, 0) && ok
+  renderer.showSurfaceElsewhere(7, false)
+  renderer.reuseInstances()
+  run renderer.draw(device, queue, &scene, &textures, &view, WIDTH, HEIGHT, color.transparent())
+  run device.checkErrors()
+  let back = run readBack(device, queue, &target, bgra)
+  ok = near(pixelAt(back.asSlice(), 32, 32), 0, 255, 255, 255) && ok
+
   // Removed, the surface draws nothing.
   renderer.removeSurface(7)
   run renderer.draw(device, queue, &scene, &textures, &view, WIDTH, HEIGHT, color.transparent())

@@ -1,0 +1,196 @@
+//! Where a finished scene draws its surfaces (GPU canvases), and whether a surface could show in
+//! a compositor layer of its own instead of being drawn into the window: its rect, clip, corner
+//! radius and opacity, whether it is drawn straight into the window (not inside an isolated
+//! layer), whether it is axis aligned, and whether anything drawn after it overlaps it.
+//!
+//! A surface drawn in a layer of its own shows above the whole window, so it may only be one when
+//! nothing the scene draws later covers it, its clip is a rectangle with one corner radius, and no
+//! isolated layer (group opacity, filters, a transform) holds it. [`SurfacePlacement.layerable`]
+//! says that; [`surfacePlacements`] answers it for every surface sprite of a scene.
+import scene { Scene, PrimitiveKind }
+import primitives { ContentMask, ImageSprite, surfaceOfTexture }
+import radii { Radii }
+import bounds_tree { overlaps }
+import silk.collections.list { List }
+import silk.core.ownership { Copy }
+import silk.core.option { Option }
+import silk.geometry.rect { Rect }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+import silk.num.f32
+import silk.num.u32
+import silk.num.i32
+
+/// One surface sprite of a scene, in device pixels.
+pub struct SurfacePlacement {
+  /// The surface it draws (`UiRenderer.setSurface`).
+  pub surface: u32,
+  /// Where the surface is drawn, before clipping.
+  pub bounds: Rect<f32>,
+  /// What of it shows: its bounds clipped by its mask and its own rounded clip.
+  pub clip: Rect<f32>,
+  /// The radius of the clip's corners when they are all the same and belong to the clip's
+  /// rectangle; -1 when the clip is not a rectangle with one radius.
+  pub cornerRadius: f32,
+  pub opacity: f32,
+  /// The sprite's draw order in its layer, and its scroll group.
+  pub order: u32,
+  pub group: u32,
+  /// The scene layer it is drawn in: 0 for the window, more for an isolated layer.
+  pub layer: u32,
+  /// Not turned a quarter or more.
+  pub axisAligned: bool,
+  /// Something drawn after it in the window overlaps what shows of it.
+  pub occluded: bool,
+}
+
+impl Copy for SurfacePlacement {}
+
+impl SurfacePlacement {
+  /// Whether the surface could show in a layer of its own above the window: drawn straight into
+  /// the window, axis aligned, not covered by anything drawn later, with a rectangular clip of
+  /// one corner radius and something to show.
+  pub fn layerable(self: &Self) -> bool {
+    return self.layer == 0 && self.axisAligned && !self.occluded && self.cornerRadius >= 0.0
+      && self.opacity > 0.0 && !self.clip.isEmpty()
+  }
+}
+
+fn uniform(r: Radii) -> f32 {
+  let v = r.x.topLeft
+  if r.x.topRight != v || r.x.bottomRight != v || r.x.bottomLeft != v || r.y.topLeft != v
+    || r.y.topRight != v || r.y.bottomRight != v || r.y.bottomLeft != v {
+    return -1.0
+  }
+  return v
+}
+
+fn sameRect(a: Rect<f32>, b: Rect<f32>) -> bool {
+  return a.xMin == b.xMin && a.yMin == b.yMin && a.xMax == b.xMax && a.yMax == b.yMax
+}
+
+fn clipped(a: Rect<f32>, b: Rect<f32>) -> Rect<f32> {
+  return match a.intersection(b) {
+    Option<Rect<f32>>.Some { value } => value
+    Option<Rect<f32>>.None => Rect<f32>.new(a.xMin, a.yMin, a.xMin, a.yMin)
+  }
+}
+
+/// The radius of the clip `clip` that `mask` and the sprite's own rounded clip make, or -1.
+fn radiusOf(sprite: &ImageSprite, clip: Rect<f32>) -> f32 {
+  let own = uniform(sprite.cornerRadii)
+  let masked = uniform(sprite.mask.radii)
+  if own < 0.0 || masked < 0.0 {
+    return -1.0
+  }
+  if own == 0.0 && masked == 0.0 {
+    return 0.0
+  }
+  if masked == 0.0 && sameRect(clip, sprite.clipBounds) {
+    return own
+  }
+  if own == 0.0 && sameRect(clip, sprite.mask.bounds) {
+    return masked
+  }
+  return -1.0
+}
+
+fn shows(bounds: Rect<f32>, mask: ContentMask) -> Rect<f32> {
+  return clipped(bounds, mask.bounds)
+}
+
+/// Whether anything layer `layer` draws after order `order` overlaps `area`.
+fn coveredAfter(scene: &Scene, layer: u32, order: u32, area: Rect<f32>) -> bool {
+  let shadows = scene.shadows(layer)
+  let shadowOrders = scene.orders(layer, PrimitiveKind.Shadow)
+  let mut i: usize = 0
+  while i < shadows.length {
+    if shadowOrders[i] > order && overlaps(shows(shadows[i].bounds, shadows[i].mask), area) { return true }
+    i = i + 1
+  }
+  let quads = scene.quads(layer)
+  let quadOrders = scene.orders(layer, PrimitiveKind.Quad)
+  i = 0
+  while i < quads.length {
+    if quadOrders[i] > order && overlaps(shows(quads[i].bounds, quads[i].mask), area) { return true }
+    i = i + 1
+  }
+  let paths = scene.paths(layer)
+  let pathOrders = scene.orders(layer, PrimitiveKind.Path)
+  i = 0
+  while i < paths.length {
+    let p = paths[i]
+    let x = i32.toF32(p.x)
+    let y = i32.toF32(p.y)
+    let box = Rect<f32>.new(x, y, x + u32.toF32(p.width), y + u32.toF32(p.height))
+    if pathOrders[i] > order && overlaps(shows(box, p.mask), area) { return true }
+    i = i + 1
+  }
+  let underlines = scene.underlines(layer)
+  let underlineOrders = scene.orders(layer, PrimitiveKind.Underline)
+  i = 0
+  while i < underlines.length {
+    if underlineOrders[i] > order && overlaps(shows(underlines[i].bounds, underlines[i].mask), area) { return true }
+    i = i + 1
+  }
+  let glyphs = scene.glyphs(layer)
+  let glyphOrders = scene.orders(layer, PrimitiveKind.Glyph)
+  i = 0
+  while i < glyphs.length {
+    if glyphOrders[i] > order && overlaps(shows(glyphs[i].bounds, glyphs[i].mask), area) { return true }
+    i = i + 1
+  }
+  let images = scene.images(layer)
+  let imageOrders = scene.orders(layer, PrimitiveKind.Image)
+  i = 0
+  while i < images.length {
+    if imageOrders[i] > order && overlaps(shows(images[i].bounds, images[i].mask), area) { return true }
+    i = i + 1
+  }
+  let layers = scene.layers(layer)
+  let layerOrders = scene.orders(layer, PrimitiveKind.Layer)
+  i = 0
+  while i < layers.length {
+    if layerOrders[i] > order && overlaps(layers[i].bounds, area) { return true }
+    i = i + 1
+  }
+  return false
+}
+
+/// Every surface sprite of `scene` (after `Scene.finish`), in layer and draw order, into `out`
+/// (cleared first).
+pub effect fn surfacePlacements(scene: &Scene, out: &mut List<SurfacePlacement>) -> ()
+  ! OutOfMemoryError
+  ? &mut Allocator {
+  out.clear()
+  let mut layer: u32 = 0
+  while layer < scene.layerCount() {
+    let images = scene.images(layer)
+    let orders = scene.orders(layer, PrimitiveKind.Image)
+    let groups = scene.groupsOf(layer, PrimitiveKind.Image)
+    let mut i: usize = 0
+    while i < images.length {
+      let sprite = &images[i]
+      let surface = surfaceOfTexture(sprite.tile.texture.index)
+      if surface != 4294967295 {
+        let clip = clipped(clipped(sprite.bounds, sprite.mask.bounds), sprite.clipBounds)
+        let order = orders[i]
+        run out.append(
+          SurfacePlacement {
+            surface: surface,
+            bounds: sprite.bounds,
+            clip: clip,
+            cornerRadius: radiusOf(sprite, clip),
+            opacity: sprite.opacity,
+            order: order,
+            group: groups[i],
+            layer: layer,
+            axisAligned: sprite.quarterTurns == 0,
+            occluded: layer == 0 && coveredAfter(scene, layer, order, clip),
+          },
+        )
+      }
+      i = i + 1
+    }
+    layer = layer + 1
+  }
+}

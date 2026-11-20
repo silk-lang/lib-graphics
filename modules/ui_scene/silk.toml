@@ -3,7 +3,7 @@ name = "graphics-ui-scene"
 description = "UI frame primitives ordered and batched for a GPU, with a CPU reference renderer"
 version = "0.1.0"
 kind = "library"
-exports = ["radii", "effects", "color", "primitives", "bounds_tree", "scene", "scroll", "path_cache", "cpu"]
+exports = ["radii", "effects", "color", "primitives", "bounds_tree", "scene", "scroll", "path_cache", "cpu", "placement"]
 
 [dependencies]
 vector = { path = "../vector", package = "graphics-vector" }

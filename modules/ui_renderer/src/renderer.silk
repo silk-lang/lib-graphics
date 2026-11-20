@@ -776,6 +776,8 @@ effect fn beginPass<'e>(
 struct SurfaceTexture {
   id: u32,
   view: TextureView,
+  /// Shown somewhere else (a compositor layer of its own): its sprites draw nothing here.
+  elsewhere: bool,
 }
 
 /// Draws UI scenes onto one target format. Keep one per window and reuse it every frame.
@@ -1001,8 +1003,37 @@ impl UiRenderer {
   pub effect fn setSurface(self: &mut Self, id: u32, view: &TextureView) -> ()
     ! OutOfMemoryError
     ? &mut Allocator {
+    let elsewhere = self.surfaceElsewhere(id)
     self.removeSurface(id)
-    run self.surfaces.append(SurfaceTexture { id: id, view: view.dup() })
+    run self.surfaces.append(SurfaceTexture { id: id, view: view.dup(), elsewhere: elsewhere })
+  }
+
+  /// Leaves the sprites of surface `id` out of the frames drawn from now on (`elsewhere`), or
+  /// draws them again: for a surface a compositor layer shows above the window instead
+  /// (`ui_scene.placement`). Its view stays registered, so drawing it again needs no new
+  /// `setSurface`. Does nothing for an id with no view.
+  pub fn showSurfaceElsewhere(self: &mut Self, id: u32, elsewhere: bool) -> () {
+    let list = self.surfaces.asMutSlice()
+    let mut i: usize = 0
+    while i < list.length {
+      if list[i].id == id {
+        list[i].elsewhere = elsewhere
+      }
+      i = i + 1
+    }
+  }
+
+  /// Whether surface `id` is shown somewhere else ([`UiRenderer.showSurfaceElsewhere`]).
+  pub fn surfaceElsewhere(self: &Self, id: u32) -> bool {
+    let list = self.surfaces.asSlice()
+    let mut i: usize = 0
+    while i < list.length {
+      if list[i].id == id {
+        return list[i].elsewhere
+      }
+      i = i + 1
+    }
+    return false
   }
 
   /// Forgets surface `id`: its sprites draw nothing.
@@ -3152,7 +3183,9 @@ impl UiRenderer {
         }
         PrimitiveKind.Image => {
           let surface = self.surfaceIndex(batch.texture)
-          if u32.toUsize(batch.texture) < atlas.textureCount() || surface != usize.MAX {
+          // A surface a layer of its own shows is not drawn into the window.
+          let drawn = surface == usize.MAX || !self.surfaces.asSlice()[surface].elsewhere
+          if drawn && (u32.toUsize(batch.texture) < atlas.textureCount() || surface != usize.MAX) {
             let key = Draws.key(set, kind, globalsId, batch.texture)
             let mut group = draws.find(key)
             if group == usize.MAX {

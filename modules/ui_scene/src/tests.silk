@@ -3,3 +3,4 @@ import scene_tests
 import path_cache_tests
 import cpu_tests
 import radii_tests
+import placement_tests
