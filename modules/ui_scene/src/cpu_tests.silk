@@ -21,6 +21,7 @@ import primitives {
   StopRange,
   StopsGradient,
   Shadow,
+  SurfaceSprite,
   Underline,
 }
 import scene { Scene }
@@ -541,6 +542,39 @@ effect fn sprites() -> ()
       && is(image.pixel(54, 10), 0, 128, 0, 128) && is(image.pixel(57, 17), 10, 20, 30, 255),
     "nearest sampling scales each texel up to a square of one color",
   )
+}
+
+effect fn surfaces() -> ()
+  ! AssertionError<'static> | GeometryError | OutOfMemoryError
+  ? &mut Allocator {
+  let mut pixels = AtlasPixels.make()
+  let mut scene = Scene.make()
+  drop run scene.surface(SurfaceSprite.whole(rect(10.0, 10.0, 4.0, 2.0), window(), 3))
+  let blank = run render(&mut scene, &pixels)
+  run Testing.expect(is(blank.pixel(11, 11), 0, 0, 0, 0), "a surface with no pixels draws nothing")
+  // 2 x 1: red, then half transparent green (premultiplied).
+  run pixels.setSurface(3, 2, 1, &[255, 0, 0, 255, 0, 128, 0, 128])
+  let mut again = Scene.make()
+  let mut sprite = SurfaceSprite.whole(rect(10.0, 10.0, 4.0, 2.0), window(), 3)
+  sprite.nearest = true
+  drop run again.surface(sprite)
+  let drawn = run render(&mut again, &pixels)
+  run Testing.expect(
+    is(drawn.pixel(10, 10), 255, 0, 0, 255) && is(drawn.pixel(11, 11), 255, 0, 0, 255)
+      && is(drawn.pixel(12, 10), 0, 128, 0, 128) && is(drawn.pixel(13, 11), 0, 128, 0, 128),
+    "the whole surface stretches over its bounds once it has pixels",
+  )
+  pixels.removeSurface(3)
+  let mut gone = Scene.make()
+  drop run gone.surface(sprite)
+  let removed = run render(&mut gone, &pixels)
+  run Testing.expect(is(removed.pixel(10, 10), 0, 0, 0, 0), "a removed surface draws nothing again")
+}
+
+test effect fn surfaceSpritesDrawTheirPixels() -> ()
+  ! AssertionError<'static> | GeometryError | OutOfMemoryError {
+  let mut allocator = Allocator.systemAllocatorProvider()
+  run surfaces() |> Effect.provideMut<Allocator>(&mut allocator)
 }
 
 test effect fn atlasSprites() -> ()

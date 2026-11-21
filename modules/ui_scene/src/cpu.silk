@@ -50,6 +50,7 @@ import primitives {
   Quad,
   Shadow,
   Underline,
+  surfaceOfTexture,
 }
 import scene { PrimitiveKind, Scene, NO_MASK }
 import scroll { Placements, ScrollPosition }
@@ -63,7 +64,17 @@ const PI: f64 = 3.141592653589793
 /// premultiplied RGBA bytes for the others.
 pub struct AtlasPixels {
   textures: List<TexturePixels>,
+  /// Surface textures by id, for the surface sprites a scene names ([`AtlasPixels.setSurface`]).
+  surfaces: List<SurfacePixels>,
 }
+
+struct SurfacePixels {
+  surface: u32,
+  texture: TexturePixels,
+}
+
+// Where `AtlasPixels.storeOf` numbers surface textures: past every atlas texture.
+const SURFACE_STORE: usize = 1073741824
 
 struct TexturePixels {
   width: u32,
@@ -74,7 +85,7 @@ struct TexturePixels {
 
 impl AtlasPixels {
   pub fn make() -> AtlasPixels {
-    return AtlasPixels { textures: List<TexturePixels>.make() }
+    return AtlasPixels { textures: List<TexturePixels>.make(), surfaces: List<SurfacePixels>.make() }
   }
 
   /// Creates zeroed storage for every texture `atlas` has added since the last call.
@@ -129,9 +140,78 @@ impl AtlasPixels {
     }
   }
 
-  /// Texel `(x, y)` channel `c` of texture `t`.
+  /// Gives surface `surface` the premultiplied RGBA `pixels` (`width` by `height`, tightly
+  /// packed), so surface sprites naming it draw them as the GPU renderer draws its texture
+  /// (`UiRenderer.setSurface`). Pixels of another length leave the surface without a texture.
+  pub effect fn setSurface(self: &mut Self, surface: u32, width: u32, height: u32, pixels: &[u8]) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    self.removeSurface(surface)
+    if width == 0 || height == 0 || pixels.length != u32.toUsize(width) * u32.toUsize(height) * 4 {
+      return
+    }
+    let mut bytes = List<u8>.make()
+    run bytes.appendSlice(pixels)
+    run self.surfaces.append(
+      SurfacePixels {
+        surface: surface,
+        texture: TexturePixels { width: width, height: height, channels: 4, bytes: move bytes },
+      },
+    )
+  }
+
+  /// Forgets surface `surface`'s texture: its sprites draw nothing again.
+  pub fn removeSurface(self: &mut Self, surface: u32) -> () {
+    let mut i: usize = 0
+    while i < self.surfaces.length() {
+      if self.surfaces.asSlice()[i].surface == surface {
+        drop self.surfaces.remove(i)
+        return
+      }
+      i = i + 1
+    }
+  }
+
+  /// The store of texture index `index`: an atlas texture's own index, `SURFACE_STORE` plus the
+  /// place of a surface's texture, or `usize.MAX` for a texture with no pixels here.
+  fn storeOf(self: &Self, index: u32) -> usize {
+    let surface = surfaceOfTexture(index)
+    if surface == 4294967295 {
+      return if u32.toUsize(index) < self.textures.length() { u32.toUsize(index) } else { usize.MAX }
+    }
+    let mut i: usize = 0
+    while i < self.surfaces.length() {
+      if self.surfaces.asSlice()[i].surface == surface {
+        return SURFACE_STORE + i
+      }
+      i = i + 1
+    }
+    return usize.MAX
+  }
+
+  /// Clips `tile`'s bounds to the size of a surface texture. Says whether anything is left to
+  /// draw; false for a surface with no texture here. Atlas tiles stay as they are.
+  fn clipToStore(self: &Self, tile: &mut AtlasTile) -> bool {
+    if surfaceOfTexture(tile.texture.index) == 4294967295 {
+      return true
+    }
+    let t = self.storeOf(tile.texture.index)
+    if t == usize.MAX {
+      return false
+    }
+    let texture = &self.surfaces.asSlice()[t - SURFACE_STORE].texture
+    let x1 = if tile.bounds.xMax < texture.width { tile.bounds.xMax } else { texture.width }
+    let y1 = if tile.bounds.yMax < texture.height { tile.bounds.yMax } else { texture.height }
+    if tile.bounds.xMin >= x1 || tile.bounds.yMin >= y1 {
+      return false
+    }
+    tile.bounds = Rect<u32>.new(tile.bounds.xMin, tile.bounds.yMin, x1, y1)
+    return true
+  }
+
+  /// Texel `(x, y)` channel `c` of store `t` (see `storeOf`).
   fn texel(self: &Self, t: usize, x: u32, y: u32, c: u32) -> u32 {
-    let texture = &self.textures.asSlice()[t]
+    let texture = if t >= SURFACE_STORE { &self.surfaces.asSlice()[t - SURFACE_STORE].texture } else { &self.textures.asSlice()[t] }
     let at = (u32.toUsize(y) * u32.toUsize(texture.width) + u32.toUsize(x))
       * u32.toUsize(texture.channels)
       + u32.toUsize(c)
@@ -141,8 +221,8 @@ impl AtlasPixels {
   /// Channel `c` of the texel of `tile` that holds tile-space position `(u, v)`, clamped to the
   /// tile; 0..=255 as f32.
   fn nearest(self: &Self, tile: AtlasTile, u: f32, v: f32, c: u32) -> f32 {
-    let t = u32.toUsize(tile.texture.index)
-    if t >= self.textures.length() {
+    let t = self.storeOf(tile.texture.index)
+    if t == usize.MAX {
       return 0.0
     }
     let w = tile.bounds.xMax - tile.bounds.xMin
@@ -155,8 +235,8 @@ impl AtlasPixels {
   /// Bilinear sample of channel `c` of `tile` at tile-space position `(u, v)` (texel centers at
   /// `.5`), clamped to the tile; 0..=255 as f32.
   fn sample(self: &Self, tile: AtlasTile, u: f32, v: f32, c: u32) -> f32 {
-    let t = u32.toUsize(tile.texture.index)
-    if t >= self.textures.length() {
+    let t = self.storeOf(tile.texture.index)
+    if t == usize.MAX {
       return 0.0
     }
     let w = tile.bounds.xMax - tile.bounds.xMin
@@ -1193,6 +1273,11 @@ impl CpuRenderer {
     ? &mut Allocator {
     let area = areaOf(sprite.bounds, sprite.mask.bounds, target.width(), target.height())
     if area.width == 0 {
+      return
+    }
+    let mut sprite = sprite
+    // A surface's source rectangle is clipped to its texture, as the GPU renderer clips it.
+    if !pixels.clipToStore(&mut sprite.tile) {
       return
     }
     self.path.clear()
