@@ -283,6 +283,11 @@ impl Placements {
     return self.list.length() <= 1
   }
 
+  /// How many groups are placed: group indices below this have a placement of their own.
+  pub fn count(self: &Self) -> usize {
+    return self.list.length()
+  }
+
   /// The placement of group `group`.
   pub fn get(self: &Self, group: u32) -> Placement {
     if u32.toUsize(group) >= self.list.length() {

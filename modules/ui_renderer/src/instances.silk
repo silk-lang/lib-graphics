@@ -52,6 +52,9 @@ pub const PATH_BYTES: usize = 128
 
 pub const RUN_BYTES: usize = 32
 
+/// Bytes of a `Placement` of `shaders/mono.wgsl`: where a scroll group draws.
+pub const PLACEMENT_BYTES: usize = 64
+
 /// Entries per gradient ramp, one premultiplied RGBA8 word each, as the CPU reference keeps.
 pub const RAMP_LENGTH: usize = 256
 
@@ -389,7 +392,9 @@ effect fn pushTile(bytes: &mut List<u8>, r: Rect<u32>) -> ()
   run push4(&mut bytes, u32.toF32(r.xMin), u32.toF32(r.yMin), u32.toF32(r.xMax), u32.toF32(r.yMax))
 }
 
-effect fn packGlyph(bytes: &mut List<u8>, g: GlyphSprite, transform: f32) -> ()
+/// A glyph as it was painted, with the scroll group `group` that places it: the shader moves
+/// and clips it by that group's `Placement`, so a scroll changes no glyph instance.
+effect fn packGlyph(bytes: &mut List<u8>, g: GlyphSprite, transform: f32, group: u32) -> ()
   ! OutOfMemoryError
   ? &mut Allocator {
   run pushRect(&mut bytes, g.bounds)
@@ -397,7 +402,7 @@ effect fn packGlyph(bytes: &mut List<u8>, g: GlyphSprite, transform: f32) -> ()
   run pushColor(&mut bytes, g.color)
   run pushTile(&mut bytes, g.tile.bounds)
   run pushRadii(&mut bytes, g.mask.radii)
-  run push4(&mut bytes, transform, 0.0, 0.0, 0.0)
+  run push4(&mut bytes, transform, u32.toF32(group), 0.0, 0.0)
 }
 
 effect fn packImage(bytes: &mut List<u8>, s: ImageSprite, transform: f32) -> ()
@@ -424,6 +429,8 @@ pub struct Instances {
   pub shadows: List<u8>,
   pub underlines: List<u8>,
   pub glyphs: List<u8>,
+  /// Where each scroll group draws, `PLACEMENT_BYTES` each: what glyphs are placed by.
+  pub placements: List<u8>,
   pub images: List<u8>,
   pub paths: List<u8>,
   pub runs: List<u8>,
@@ -446,6 +453,7 @@ impl Instances {
       shadows: List<u8>.make(),
       underlines: List<u8>.make(),
       glyphs: List<u8>.make(),
+      placements: List<u8>.make(),
       images: List<u8>.make(),
       paths: List<u8>.make(),
       runs: List<u8>.make(),
@@ -475,13 +483,27 @@ impl Instances {
   /// Packs every layer of `scene`, which must be finished, with its scroll groups moved to
   /// `placed`. `transforms[l]` is the transform layer `l`'s primitives are drawn through: an
   /// index into the renderer's `Transform`s, 0 for a layer drawn where it lies.
-  pub effect fn pack(self: &mut Self, scene: &Scene, placed: &Placements, transforms: &[u32]) -> ()
+  ///
+  /// Glyphs are packed as painted and placed by the shader from `placements`. With
+  /// `keepGlyphs`, `scene` is the one packed last and only its scroll positions differ: the
+  /// glyph instances already packed stay as they are.
+  pub effect fn pack(
+    self: &mut Self,
+    scene: &Scene,
+    placed: &Placements,
+    transforms: &[u32],
+    keepGlyphs: bool,
+  ) -> ()
     ! OutOfMemoryError
     ? &mut Allocator {
     self.quads.clear()
     self.shadows.clear()
     self.underlines.clear()
-    self.glyphs.clear()
+    if !keepGlyphs {
+      self.glyphs.clear()
+    }
+    run self.packPlacements(placed)
+    let mut glyphBase: u32 = 0
     self.images.clear()
     self.paths.clear()
     self.runs.clear()
@@ -501,7 +523,7 @@ impl Instances {
       run self.bases.append(usize.toU32(self.quads.length() / QUAD_BYTES))
       run self.bases.append(usize.toU32(self.paths.length() / PATH_BYTES))
       run self.bases.append(usize.toU32(self.underlines.length() / UNDERLINE_BYTES))
-      run self.bases.append(usize.toU32(self.glyphs.length() / MONO_BYTES))
+      run self.bases.append(glyphBase)
       run self.bases.append(usize.toU32(self.images.length() / POLY_BYTES))
       run self.bases.append(0)
       let transform = u32.toF32(transforms[u32.toUsize(layer)])
@@ -527,11 +549,14 @@ impl Instances {
         i = i + 1
       }
       let glyphs = scene.glyphs(layer)
-      groups = scene.groupsOf(layer, PrimitiveKind.Glyph)
-      i = 0
-      while i < glyphs.length {
-        run packGlyph(&mut self.glyphs, placed.glyph(glyphs[i], groups[i]), transform)
-        i = i + 1
+      glyphBase = glyphBase + usize.toU32(glyphs.length)
+      if !keepGlyphs {
+        groups = scene.groupsOf(layer, PrimitiveKind.Glyph)
+        i = 0
+        while i < glyphs.length {
+          run packGlyph(&mut self.glyphs, glyphs[i], transform, groups[i])
+          i = i + 1
+        }
       }
       let images = scene.images(layer)
       groups = scene.groupsOf(layer, PrimitiveKind.Image)
@@ -551,6 +576,22 @@ impl Instances {
     }
     let total = self.runCount()
     run self.pathRuns.append(total)
+  }
+
+  /// Entry `g` is where group `g` draws; entry 0, the root, moves and clips nothing.
+  effect fn packPlacements(self: &mut Self, placed: &Placements) -> ()
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    self.placements.clear()
+    let count = if placed.count() == 0 { 1 } else { placed.count() }
+    let mut g: usize = 0
+    while g < count {
+      let p = placed.get(usize.toU32(g))
+      run push4(&mut self.placements, p.dx, p.dy, 0.0, 0.0)
+      run pushRect(&mut self.placements, p.mask.bounds)
+      run pushRadii(&mut self.placements, p.mask.radii)
+      g = g + 1
+    }
   }
 
   effect fn packPath(self: &mut Self, scene: &Scene, p: PathSprite, strips: &[Strip], fills: &[Fill]) -> ()
