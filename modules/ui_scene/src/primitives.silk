@@ -454,7 +454,8 @@ pub fn surfaceOfTexture(index: u32) -> u32 {
 /// The `source` texels are stretched over `bounds` with bilinear sampling clamped to `source`, and
 /// clipped to `cornerRadii` of `clipBounds` and the content mask, as an [`ImageSprite`]: a surface
 /// sprite is drawn as one ([`SurfaceSprite.image`]), in the image batches of its layer. A sprite
-/// whose surface has no texture draws nothing, and the CPU reference draws none.
+/// whose surface has no texture draws nothing, in the CPU reference too (`AtlasPixels.setSurface`
+/// gives it one).
 pub struct SurfaceSprite {
   pub bounds: Rect<f32>,
   /// Rounded content-box clip, independent of the sampling bounds.
