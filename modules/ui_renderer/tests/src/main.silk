@@ -40,6 +40,7 @@ import ui_fixtures.fixtures { WIDTH, HEIGHT, rect, window }
 import ui_scene.primitives { SurfaceSprite }
 import ui_scene.radii { Radii }
 import ui_scene.scene { Scene }
+import ui_scene.scroll { ScrollPosition }
 import atlas.atlas { Atlas, AtlasOptions }
 
 effect fn renderTarget(device: &Device, format: u32) -> Texture
@@ -435,6 +436,55 @@ effect fn checkSurfaces(
   return ok
 }
 
+/// A scroll of a scene the renderer holds, drawn from the instances it kept (its glyphs are
+/// not packed or uploaded again, only where their scroll groups draw): the picture is the one a
+/// renderer that never saw the scene draws at those positions, and it did move.
+effect fn checkRescroll(device: &Device, queue: &Queue, renderer: &mut UiRenderer, index: u32) -> bool
+  ! GpuError | OutOfMemoryError | GeometryError | AtlasError
+  ? &mut Allocator {
+  let f = run fixture(index)
+  let painted = run renderOnGpu(device, queue, &mut renderer, &f, false, false)
+  let mut ok = true
+  let offsets: [f32; 3] = [61.0, 3.5, 140.0]
+  let mut step: usize = 0
+  while step < offsets.length {
+    let moved = [
+      ScrollPosition { node: 3, x: 9.0, y: offsets[step], minX: 0.0, maxX: 40.0, minY: 0.0, maxY: 200.0 },
+    ]
+    run renderer.setScrolls(&moved)
+    renderer.reuseInstances()
+    let kept = run renderOnGpu(device, queue, &mut renderer, &f, false, false)
+    let mut fresh = run UiRenderer.make(device, flags.WGPUTextureFormat_RGBA8Unorm)
+    fresh.setTextSettings(TextSettings.none())
+    run fresh.setScrolls(&moved)
+    let packed = run renderOnGpu(device, queue, &mut fresh, &f, false, false)
+    ok = compare(
+      f.name,
+      "scrolled again, instances kept",
+      packed.asSlice(),
+      kept.asSlice(),
+      Tolerance { max: 0, share: 0.0, mean: 0.0 },
+    )
+      && ok
+    let mut differs = false
+    let mut i: usize = 0
+    while i < kept.length() {
+      if kept.get(i) != painted.get(i) {
+        differs = true
+        break
+      }
+      i = i + 1
+    }
+    if !differs {
+      StderrWriter.print("{} (scrolled again): the scroll moved nothing\n", &.(f.name))
+      ok = false
+    }
+    step = step + 1
+  }
+  run renderer.setScrolls(&[])
+  return ok
+}
+
 effect fn program() -> i32
   ! GpuError | OutOfMemoryError | GeometryError | AtlasError
   ? &mut Allocator {
@@ -493,6 +543,9 @@ effect fn program() -> i32
     again = again + 1
   }
 
+  // The scrolled scene (glyphs, layers, an image and paths in a scroll group), scrolled by the
+  // compositor.
+  ok = (run checkRescroll(&device, &queue, &mut rgba, 7)) && ok
   ok = (run checkSurfaces(&device, &queue, &mut rgba, false)) && ok
   ok = (run checkSurfaces(&device, &queue, &mut bgra, true)) && ok
 

@@ -78,6 +78,7 @@ import instances {
   Instances,
   MONO_BYTES,
   PATH_BYTES,
+  PLACEMENT_BYTES,
   POLY_BYTES,
   QUAD_BYTES,
   RUN_BYTES,
@@ -112,6 +113,8 @@ const ALPHAS: usize = 8
 const RAMPS: usize = 9
 
 const TRANSFORMS: usize = 10
+
+const PLACEMENTS: usize = 11
 
 /// In a [`Draws`] key: the pipelines that draw onto the target, and onto a layer texture.
 const SET_TARGET: u32 = 0
@@ -1460,14 +1463,17 @@ impl UiRenderer {
     ? &mut Allocator {
     let reuse = self.reuse
     self.reuse = false
-    if reuse && self.held && width == self.heldWidth && height == self.heldHeight
-      && sameScrolls(self.newer.asSlice(), self.heldScrolls.asSlice()) {
+    // The scene and size of the last draw: its instances are on the GPU.
+    let same = reuse && self.held && width == self.heldWidth && height == self.heldHeight
+    if same && sameScrolls(self.newer.asSlice(), self.heldScrolls.asSlice()) {
       return
     }
     self.held = false
     run self.placed.resolve(scene.scrollGroups(), scene.scrolls(), self.newer.asSlice())
     run self.planInline(scene)
-    run self.instances.pack(scene, &self.placed, self.inline.asSlice())
+    // Only scroll positions moved: glyphs, most of a page's instances, are placed by the
+    // shader and stay as they are on the GPU.
+    run self.instances.pack(scene, &self.placed, self.inline.asSlice(), same)
     let mut globals: [u8; 64] = [0; 64]
     writeU32(&mut globals, 0, f32.toBits(u32.toF32(width)))
     writeU32(&mut globals, 4, f32.toBits(u32.toF32(height)))
@@ -1519,16 +1525,18 @@ impl UiRenderer {
       UNDERLINE_BYTES,
       storage,
     )
-    run uploadList(
-      device,
-      queue,
-      &mut self.buffers,
-      GLYPHS,
-      b"ui glyphs",
-      &mut self.instances.glyphs,
-      MONO_BYTES,
-      storage,
-    )
+    if !same {
+      run uploadList(
+        device,
+        queue,
+        &mut self.buffers,
+        GLYPHS,
+        b"ui glyphs",
+        &mut self.instances.glyphs,
+        MONO_BYTES,
+        storage,
+      )
+    }
     run uploadList(
       device,
       queue,
@@ -1587,6 +1595,16 @@ impl UiRenderer {
       b"ui transforms",
       &mut self.transforms,
       TRANSFORM_BYTES,
+      storage,
+    )
+    run uploadList(
+      device,
+      queue,
+      &mut self.buffers,
+      PLACEMENTS,
+      b"ui scroll placements",
+      &mut self.instances.placements,
+      PLACEMENT_BYTES,
       storage,
     )
     self.heldWidth = width
@@ -3172,6 +3190,7 @@ impl UiRenderer {
                 entry(1, &b[GLYPHS]),
                 textureEntry(2, atlas.view(u32.toUsize(batch.texture))),
                 entry(8, &b[TRANSFORMS]),
+                entry(9, &b[PLACEMENTS]),
               ]
               group = run draws.add(key, run gpu.createBindGroup(
                 device,
