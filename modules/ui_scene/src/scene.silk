@@ -424,6 +424,40 @@ impl LayerData {
     }
   }
 
+  /// The order of item `at` of primitive kind `kind` (an operation kind, 0 to 5).
+  fn orderOf(self: &Self, kind: u32, at: usize) -> u32 {
+    if kind == 0 { return self.shadows.orders.get(at) }
+    if kind == 1 { return self.quads.orders.get(at) }
+    if kind == 2 { return self.paths.orders.get(at) }
+    if kind == 3 { return self.underlines.orders.get(at) }
+    if kind == 4 { return self.glyphs.orders.get(at) }
+    return self.images.orders.get(at)
+  }
+
+  /// The bounds [`Scene.place`] took for item `at` of primitive kind `kind`.
+  fn boundsOf(self: &Self, kind: u32, at: usize) -> Rect<f32> {
+    if kind == 0 { return self.shadows.added.get(at).paintBounds() }
+    if kind == 1 { return self.quads.added.get(at).bounds }
+    if kind == 2 {
+      let p = self.paths.added.get(at)
+      let x = i32.toF32(p.x)
+      let y = i32.toF32(p.y)
+      return Rect<f32>.new(x, y, x + u32.toF32(p.width), y + u32.toF32(p.height))
+    }
+    if kind == 3 { return self.underlines.added.get(at).bounds }
+    if kind == 4 { return self.glyphs.added.get(at).bounds }
+    return self.images.added.get(at).bounds
+  }
+
+  fn maskOf(self: &Self, kind: u32, at: usize) -> ContentMask {
+    if kind == 0 { return self.shadows.added.get(at).mask }
+    if kind == 1 { return self.quads.added.get(at).mask }
+    if kind == 2 { return self.paths.added.get(at).mask }
+    if kind == 3 { return self.underlines.added.get(at).mask }
+    if kind == 4 { return self.glyphs.added.get(at).mask }
+    return self.images.added.get(at).mask
+  }
+
   effect fn copyFrom(self: &mut Self, other: &LayerData) -> ()
     ! OutOfMemoryError
     ? &mut Allocator {
@@ -695,6 +729,8 @@ pub struct Scene {
   slack: u32,
   /// The stops of every [`StopsGradient`] in the frame.
   stops: List<ColorStop>,
+  /// While nonzero, the order [`Scene.place`] gives without asking the order tree (replay).
+  fixedOrder: u32,
 }
 
 /// Frames a scene keeps storage that under half of it is used of (see `Scene.trim`).
@@ -777,6 +813,7 @@ impl Scene {
       scrollLog: List<ScrollPosition>.make(),
       slack: 0,
       stops: List<ColorStop>.make(),
+      fixedOrder: 0,
     }
   }
 
@@ -987,6 +1024,9 @@ impl Scene {
     let context = self.context()
     if context.pinned != 0 {
       return context.pinned
+    }
+    if self.fixedOrder != 0 {
+      return self.fixedOrder
     }
     if context.tree != NO_TREE {
       return run self.groupTrees.asMutSlice()[u32.toUsize(context.tree)].insert(
@@ -1534,6 +1574,10 @@ impl Scene {
       let op = previous.operations.get(i)
       let at = u32.toUsize(op.index)
       let data = &previous.layerData.asSlice()[u32.toUsize(op.layer)]
+      if op.kind <= 5 && self.context().pinned == 0 {
+        i = run self.replayRun(previous, i, last)
+        continue
+      }
       if op.kind == 0 {
         drop run self.shadow(data.shadows.added.get(at))
       } else if op.kind == 1 {
@@ -1604,6 +1648,74 @@ impl Scene {
   }
 
   /// Copies one path's strips, whose alphas index `alphas`, as one contiguous alpha run.
+  /// Replays the primitives from operation `from` of `previous` that follow one another in one
+  /// layer, and returns the operation after them. They keep their orders relative to one another
+  /// and go over everything their union overlaps; the order tree takes the union once, not each.
+  effect fn replayRun(self: &mut Self, previous: &Scene, from: usize, last: usize) -> usize
+    ! OutOfMemoryError
+    ? &mut Allocator {
+    let layer = previous.operations.get(from).layer
+    let mut to = from
+    let mut lowest: u32 = 4294967295
+    let mut highest: u32 = 0
+    let mut reach = Rect<f32>.new(0.0, 0.0, 0.0, 0.0)
+    while to < last {
+      let op = previous.operations.get(to)
+      if op.kind > 5 || op.layer != layer {
+        break
+      }
+      let data = &previous.layerData.asSlice()[u32.toUsize(layer)]
+      let order = data.orderOf(op.kind, u32.toUsize(op.index))
+      let area = pixelBounds(clipped(data.boundsOf(op.kind, u32.toUsize(op.index)), data.maskOf(op.kind, u32.toUsize(op.index))))
+      if lowest > order { lowest = order }
+      if highest < order { highest = order }
+      reach = if to == from { area } else { Rect<f32>.new(f32.min(reach.xMin, area.xMin), f32.min(reach.yMin, area.yMin), f32.max(reach.xMax, area.xMax), f32.max(reach.yMax, area.yMax)) }
+      to = to + 1
+    }
+    run self.ensureRoot()
+    let context = self.context()
+    let base = if context.tree != NO_TREE {
+      run self.groupTrees.asMutSlice()[u32.toUsize(context.tree)].maxOverlapping(reach)
+    } else {
+      run self.layerData.asMutSlice()[u32.toUsize(context.layer)].tree.maxOverlapping(reach)
+    }
+    let mut i = from
+    while i < to {
+      let op = previous.operations.get(i)
+      let at = u32.toUsize(op.index)
+      let data = &previous.layerData.asSlice()[u32.toUsize(layer)]
+      self.fixedOrder = data.orderOf(op.kind, at) - lowest + base + 1
+      if op.kind == 0 {
+        drop run self.shadow(data.shadows.added.get(at))
+      } else if op.kind == 1 {
+        let mut q = data.quads.added.get(at)
+        q.background = run self.adopt(previous, q.background)
+        drop run self.quad(q)
+      } else if op.kind == 2 {
+        let mut p = data.paths.added.get(at)
+        p.paint = run self.adopt(previous, p.paint)
+        let strips = Slice.view<Strip>(previous.strips.asSlice(), u32.toUsize(p.stripStart), u32.toUsize(p.stripCount))
+        let fills = Slice.view<Fill>(previous.fills.asSlice(), u32.toUsize(p.fillStart), u32.toUsize(p.fillCount))
+        run self.replayPath(p, strips, fills, previous.alphas.asSlice())
+      } else if op.kind == 3 {
+        drop run self.underline(data.underlines.added.get(at))
+      } else if op.kind == 4 {
+        drop run self.glyph(data.glyphs.added.get(at))
+      } else {
+        drop run self.image(data.images.added.get(at))
+      }
+      i = i + 1
+    }
+    self.fixedOrder = 0
+    let top = base + highest - lowest + 1
+    if context.tree != NO_TREE {
+      run self.groupTrees.asMutSlice()[u32.toUsize(context.tree)].insertWithOrder(reach, top)
+    } else {
+      run self.layerData.asMutSlice()[u32.toUsize(context.layer)].tree.insertWithOrder(reach, top)
+    }
+    return to
+  }
+
   effect fn replayPath(
     self: &mut Self,
     path: PathSprite,
