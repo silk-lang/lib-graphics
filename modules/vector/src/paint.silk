@@ -1012,14 +1012,27 @@ impl<'a> ImagePattern<'a> {
       } else {
         BILINEAR_SHIFT_SLACK
       }
-      let limit = u32.toF64(pattern.shiftLimit)
+      let exactShift = !pattern.projective && k == 1.0
+      let limit = if nearest || exactShift {
+        u32.toF64(NEAREST_SHIFT_LIMIT)
+      } else {
+        u32.toF64(BILINEAR_SHIFT_LIMIT)
+      }
       if f64.abs(e) < limit && f64.abs(f) < limit {
         let x = f64.floor(e + 0.5)
         let y = f64.floor(f + 0.5)
-        if f64.abs(e - x) < slack && f64.abs(f - y) < slack {
+        if exactShift && m[4] == f64.toF32(x) && m[5] == f64.toF32(y) {
+          pattern.shiftLimit = NEAREST_SHIFT_LIMIT
           pattern.shifted = true
           pattern.shiftX = f64.toI64(x)
           pattern.shiftY = f64.toI64(y)
+        } else {
+          let bl = u32.toF64(pattern.shiftLimit)
+          if f64.abs(e) < bl && f64.abs(f) < bl && f64.abs(e - x) < slack && f64.abs(f - y) < slack {
+            pattern.shifted = true
+            pattern.shiftX = f64.toI64(x)
+            pattern.shiftY = f64.toI64(y)
+          }
         }
       }
     }
@@ -1284,13 +1297,94 @@ impl<'a> Shader for ImagePattern<'a> {
     let mut i: usize = 0
     let limit = self.shiftLimit
     if self.shifted && x < limit && y < limit && count < u32.toUsize(limit) {
+      let wUsize = u32.toUsize(self.image.width())
       let w = u32.toI64(self.image.width())
       let row = self.shiftedIndex(u32.toI64(y) + self.shiftY, u32.toI64(self.image.height()))
+      let data = self.image.data()
+      let rowBase = row * wUsize * 4
+      if self.extend == EXTEND_REPEAT {
+        let mut col = self.shiftedIndex(u32.toI64(x) + self.shiftX, w)
+        while i < count {
+          let mut runLen = wUsize - col
+          if runLen > count - i {
+            runLen = count - i
+          }
+          let mut at = rowBase + col * 4
+          let end4 = i + (runLen & ~3)
+          while i < end4 {
+            let words = u8x16.bitcastToU32x4(u8x16.load(data, at))
+            out[i] = u32x4.extract(words, 0)
+            out[i + 1] = u32x4.extract(words, 1)
+            out[i + 2] = u32x4.extract(words, 2)
+            out[i + 3] = u32x4.extract(words, 3)
+            at = at + 16
+            i = i + 4
+          }
+          let end1 = i + (runLen & 3)
+          while i < end1 {
+            out[i] = u8.toU32(data[at]) | u32.shiftLeft(u8.toU32(data[at + 1]), 8)
+              | u32.shiftLeft(u8.toU32(data[at + 2]), 16)
+              | u32.shiftLeft(u8.toU32(data[at + 3]), 24)
+            at = at + 4
+            i = i + 1
+          }
+          col = col + runLen
+          if col == wUsize {
+            col = 0
+          }
+        }
+        return
+      }
       let mut column = u32.toI64(x) + self.shiftX
-      while i < count {
-        out[i] = self.word(self.shiftedIndex(column, w), row)
-        column = column + 1
-        i = i + 1
+      if column < 0 {
+        let first = u8.toU32(data[rowBase]) | u32.shiftLeft(u8.toU32(data[rowBase + 1]), 8)
+          | u32.shiftLeft(u8.toU32(data[rowBase + 2]), 16)
+          | u32.shiftLeft(u8.toU32(data[rowBase + 3]), 24)
+        let mut leftCount = i64.toUsize(-column)
+        if leftCount > count {
+          leftCount = count
+        }
+        while i < leftCount {
+          out[i] = first
+          i = i + 1
+        }
+        column = column + usize.toI64(leftCount)
+      }
+      if i < count && column < w {
+        let col = i64.toUsize(column)
+        let mut runLen = wUsize - col
+        if runLen > count - i {
+          runLen = count - i
+        }
+        let mut at = rowBase + col * 4
+        let end4 = i + (runLen & ~3)
+        while i < end4 {
+          let words = u8x16.bitcastToU32x4(u8x16.load(data, at))
+          out[i] = u32x4.extract(words, 0)
+          out[i + 1] = u32x4.extract(words, 1)
+          out[i + 2] = u32x4.extract(words, 2)
+          out[i + 3] = u32x4.extract(words, 3)
+          at = at + 16
+          i = i + 4
+        }
+        let end1 = i + (runLen & 3)
+        while i < end1 {
+          out[i] = u8.toU32(data[at]) | u32.shiftLeft(u8.toU32(data[at + 1]), 8)
+            | u32.shiftLeft(u8.toU32(data[at + 2]), 16)
+            | u32.shiftLeft(u8.toU32(data[at + 3]), 24)
+          at = at + 4
+          i = i + 1
+        }
+      }
+      if i < count {
+        let lastAt = rowBase + (wUsize - 1) * 4
+        let last = u8.toU32(data[lastAt]) | u32.shiftLeft(u8.toU32(data[lastAt + 1]), 8)
+          | u32.shiftLeft(u8.toU32(data[lastAt + 2]), 16)
+          | u32.shiftLeft(u8.toU32(data[lastAt + 3]), 24)
+        while i < count {
+          out[i] = last
+          i = i + 1
+        }
       }
       return
     }
