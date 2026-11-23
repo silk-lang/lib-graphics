@@ -11,12 +11,12 @@
 // by `blur.wgsl` is `blurSize` pixels that each span `blurScale` pixels of the backdrop copy, and
 // is scaled back up here as that shader's GROW does; `blurScale` 0 is a blur at full size.
 struct Params {
-  op: u32, mode: u32, opacity: u32, backdropEnabled: u32, clip: vec4f, pad0: u32, pad1: u32, maskOrigin: vec2u,
+  op: u32, mode: u32, opacity: u32, backdropEnabled: u32, clip: vec4f, pad0: u32, pad1: u32, maskOrigin: vec2i,
   inverse0: vec4f, inverse1: vec4f, inverse2: vec4f, source: vec4f, mapped: u32, masked: u32, rounded: u32, blurScale: u32,
   // The content mask the layer lands in; its rounded corners clip the layer.
   maskBounds: vec4f, maskRadii: Radii,
-  origins: vec4u,
-  backdropOrigin: vec2u, blurSize: vec2u,
+  origins: vec4i,
+  backdropOrigin: vec2i, blurSize: vec2u,
   // The corners of the backdrop's `clip`.
   clipRadii: Radii,
 }
@@ -77,8 +77,8 @@ const OP_BLIT: u32 = 2u;
 }
 
 // `s` inside the mask layer's alpha at scene pixel `pixel`, as vector.filter's COMPOSITE_IN.
-fn inMask(s: vec4u, pixel: vec2u) -> vec4u {
-  let a = bytes(filteredBackdrop, pixel - params.maskOrigin).w;
+fn inMask(s: vec4u, pixel: vec2i) -> vec4u {
+  let a = bytes(filteredBackdrop, vec2u(pixel - params.maskOrigin)).w;
   return vec4u(div255(s.x * a), div255(s.y * a), div255(s.z * a), div255(s.w * a));
 }
 
@@ -88,8 +88,8 @@ fn texel(x: f32, y: f32) -> vec4f {
   let low = max(params.source.xy, start);
   let high = min(params.source.zw, start + size) - 1.0;
   if x < low.x || y < low.y || x > high.x || y > high.y { return vec4f(0.0); }
-  let at = vec2u(u32(x), u32(y));
-  let local = at - params.origins.zw;
+  let at = vec2i(i32(floor(x)), i32(floor(y)));
+  let local = vec2u(at - params.origins.zw);
   if params.masked != 0u { return vec4f(inMask(bytes(layer, local), at)); }
   return textureLoad(layer, local, 0) * 255.0;
 }
@@ -107,11 +107,12 @@ fn mappedBytes(position: vec2f) -> vec4u {
 }
 
 // The layer's bytes at scene pixel `pixel`; transparent outside its page.
-fn layerBytes(pixel: vec2u) -> vec4u {
+fn layerBytes(pixel: vec2i) -> vec4u {
   let start = params.origins.zw;
-  let size = textureDimensions(layer);
-  if any(pixel < start) || any(pixel - start >= size) { return vec4u(0u); }
-  return bytes(layer, pixel - start);
+  let size = vec2i(textureDimensions(layer));
+  let local = pixel - start;
+  if any(local < vec2i(0)) || any(local >= size) { return vec4u(0u); }
+  return bytes(layer, vec2u(local));
 }
 
 fn blurredTexel(p: vec2i) -> vec4f {
@@ -156,7 +157,7 @@ fn faded(s: vec4u) -> vec4u {
 
 @fragment fn fs(@builtin(position) output: vec4f) -> @location(0) vec4f {
   let position = vec4f(output.xy + vec2f(params.origins.xy), output.zw);
-  let pixel = vec2u(position.xy);
+  let pixel = vec2i(floor(position.xy));
   var content = vec4u(0u);
   if params.mapped != 0u {
     content = mappedBytes(position.xy);
@@ -170,7 +171,7 @@ fn faded(s: vec4u) -> vec4u {
     if params.opacity == 255u { return vec4f(content) / 255.0; }
     return vec4f(faded(content)) / 255.0;
   }
-  let under = pixel - params.backdropOrigin;
+  let under = vec2u(pixel - params.backdropOrigin);
   var b = bytes(backdrop, under);
   if params.backdropEnabled != 0u {
     let distance = roundedRectSdf(position.xy, params.clip, params.clipRadii);

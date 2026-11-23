@@ -27,9 +27,12 @@
 import silk.collections.list { List }
 import silk.core.option { Option }
 import silk.core.ownership { Copy }
+import silk.geometry.point { Point2 }
 import silk.geometry.rect { Rect }
 import silk.mem.allocator { Allocator, OutOfMemoryError }
 import silk.num.f32
+import silk.num.i32
+import silk.num.i64
 import silk.num.u32
 import silk.num.u8
 import silk.num.usize
@@ -353,6 +356,10 @@ fn writeU32(bytes: &mut [u8], offset: usize, value: u32) -> () {
   bytes[offset + 3] = u32.toU8(u32.shiftRight(value, 24))
 }
 
+fn writeI32(bytes: &mut [u8], offset: usize, value: i32) -> () {
+  writeU32(&mut bytes, offset, i64.toU32(i32.toI64(value) & 4294967295))
+}
+
 /// How deep the isolated layers drawn by `layer` nest, 0 when there are none.
 fn depthOf(scene: &Scene, layer: u32) -> u32 {
   let sprites = scene.layers(layer)
@@ -458,25 +465,35 @@ fn writeMapping(header: &mut [u8], mapping: &Mapping) -> () {
   writeU32(&mut header, 112, 1)
 }
 
-/// A rectangle of target pixels.
+/// A rectangle of scene pixels (signed origin so transformed layers off the viewport or at
+/// negative coordinates still have an exact texture origin).
 struct Area {
-  x: u32,
-  y: u32,
+  x: i32,
+  y: i32,
   width: u32,
   height: u32,
 }
 
-fn areaOf(sprite: &LayerSprite, width: u32, height: u32) -> Area {
-  let x0 = f32.max(f32.floor(sprite.bounds.xMin), 0.0)
-  let y0 = f32.max(f32.floor(sprite.bounds.yMin), 0.0)
-  let x1 = f32.min(f32.ceil(sprite.bounds.xMax), u32.toF32(width))
-  let y1 = f32.min(f32.ceil(sprite.bounds.yMax), u32.toF32(height))
+const MAX_LAYER_TEXTURE: u32 = 4096
+
+fn areaIn(sprite: &LayerSprite, within: &Area) -> Area {
+  if within.width == 0 || within.height == 0 {
+    return Area { x: 0, y: 0, width: 0, height: 0 }
+  }
+  let wx0 = i32.toF32(within.x)
+  let wy0 = i32.toF32(within.y)
+  let wx1 = wx0 + u32.toF32(within.width)
+  let wy1 = wy0 + u32.toF32(within.height)
+  let x0 = f32.max(f32.floor(sprite.bounds.xMin), wx0)
+  let y0 = f32.max(f32.floor(sprite.bounds.yMin), wy0)
+  let x1 = f32.min(f32.ceil(sprite.bounds.xMax), wx1)
+  let y1 = f32.min(f32.ceil(sprite.bounds.yMax), wy1)
   if !(x0 < x1 && y0 < y1) {
     return Area { x: 0, y: 0, width: 0, height: 0 }
   }
   return Area {
-    x: f32.toU32(x0),
-    y: f32.toU32(y0),
+    x: f32.toI32(x0),
+    y: f32.toI32(y0),
     width: f32.toU32(x1 - x0),
     height: f32.toU32(y1 - y0),
   }
@@ -492,11 +509,24 @@ fn spanning(a: &Area, b: &Area) -> Area {
   if b.width == 0 || b.height == 0 {
     return a.*
   }
-  let x0 = smaller(a.x, b.x)
-  let y0 = smaller(a.y, b.y)
-  let x1 = larger(a.x + a.width, b.x + b.width)
-  let y1 = larger(a.y + a.height, b.y + b.height)
-  return Area { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+  let ax0 = i32.toI64(a.x)
+  let ay0 = i32.toI64(a.y)
+  let ax1 = ax0 + u32.toI64(a.width)
+  let ay1 = ay0 + u32.toI64(a.height)
+  let bx0 = i32.toI64(b.x)
+  let by0 = i32.toI64(b.y)
+  let bx1 = bx0 + u32.toI64(b.width)
+  let by1 = by0 + u32.toI64(b.height)
+  let x0 = if ax0 < bx0 { ax0 } else { bx0 }
+  let y0 = if ay0 < by0 { ay0 } else { by0 }
+  let x1 = if ax1 > bx1 { ax1 } else { bx1 }
+  let y1 = if ay1 > by1 { ay1 } else { by1 }
+  return Area {
+    x: i64.toI32(x0),
+    y: i64.toI32(y0),
+    width: i64.toU32(x1 - x0),
+    height: i64.toU32(y1 - y0),
+  }
 }
 
 fn sizeOf(area: &Area) -> u64 {
@@ -514,7 +544,7 @@ fn scissor(pass: &mut RenderPassEncoder<'_>, area: &Area, origin: &Area) -> () {
     pass.setScissorRect(0, 0, 0, 0)
     return
   }
-  pass.setScissorRect(local.x - origin.x, local.y - origin.y, local.width, local.height)
+  pass.setScissorRect(i32.toU32(local.x - origin.x), i32.toU32(local.y - origin.y), local.width, local.height)
 }
 
 fn larger(a: u32, b: u32) -> u32 {
@@ -534,14 +564,27 @@ fn smaller(a: u32, b: u32) -> u32 {
 }
 
 fn intersect(a: &Area, b: &Area) -> Area {
-  let x0 = larger(a.x, b.x)
-  let y0 = larger(a.y, b.y)
-  let x1 = smaller(a.x + a.width, b.x + b.width)
-  let y1 = smaller(a.y + a.height, b.y + b.height)
+  let ax0 = i32.toI64(a.x)
+  let ay0 = i32.toI64(a.y)
+  let ax1 = ax0 + u32.toI64(a.width)
+  let ay1 = ay0 + u32.toI64(a.height)
+  let bx0 = i32.toI64(b.x)
+  let by0 = i32.toI64(b.y)
+  let bx1 = bx0 + u32.toI64(b.width)
+  let by1 = by0 + u32.toI64(b.height)
+  let x0 = if ax0 > bx0 { ax0 } else { bx0 }
+  let y0 = if ay0 > by0 { ay0 } else { by0 }
+  let x1 = if ax1 < bx1 { ax1 } else { bx1 }
+  let y1 = if ay1 < by1 { ay1 } else { by1 }
   if !(x0 < x1 && y0 < y1) {
     return Area { x: 0, y: 0, width: 0, height: 0 }
   }
-  return Area { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+  return Area {
+    x: i64.toI32(x0),
+    y: i64.toI32(y0),
+    width: i64.toU32(x1 - x0),
+    height: i64.toU32(y1 - y0),
+  }
 }
 
 /// How far a blur of standard deviation `sigma` reaches: vector.filter's three box passes reach
@@ -550,13 +593,29 @@ fn blurReach(sigma: f32) -> u32 {
   return f32.toU32(f32.ceil(sigma * 3.0)) + 8
 }
 
-/// `area` grown by `by` on every side, inside the target.
-fn grown(area: &Area, by: u32, width: u32, height: u32) -> Area {
-  let x0 = if area.x > by { area.x - by } else { 0 }
-  let y0 = if area.y > by { area.y - by } else { 0 }
-  let x1 = smaller(area.x + area.width + by, width)
-  let y1 = smaller(area.y + area.height + by, height)
-  return Area { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+/// `area` grown by `by` on every side, inside `within`.
+fn grown(area: &Area, by: u32, within: &Area) -> Area {
+  let ax0 = i32.toI64(area.x) - u32.toI64(by)
+  let ay0 = i32.toI64(area.y) - u32.toI64(by)
+  let ax1 = i32.toI64(area.x) + u32.toI64(area.width) + u32.toI64(by)
+  let ay1 = i32.toI64(area.y) + u32.toI64(area.height) + u32.toI64(by)
+  let wx0 = i32.toI64(within.x)
+  let wy0 = i32.toI64(within.y)
+  let wx1 = wx0 + u32.toI64(within.width)
+  let wy1 = wy0 + u32.toI64(within.height)
+  let x0 = if ax0 > wx0 { ax0 } else { wx0 }
+  let y0 = if ay0 > wy0 { ay0 } else { wy0 }
+  let x1 = if ax1 < wx1 { ax1 } else { wx1 }
+  let y1 = if ay1 < wy1 { ay1 } else { wy1 }
+  if !(x0 < x1 && y0 < y1) {
+    return Area { x: 0, y: 0, width: 0, height: 0 }
+  }
+  return Area {
+    x: i64.toI32(x0),
+    y: i64.toI32(y0),
+    width: i64.toU32(x1 - x0),
+    height: i64.toU32(y1 - y0),
+  }
 }
 
 /// Where the pool textures of one slow composite lie in the scene.
@@ -574,9 +633,13 @@ impl Copy for Regions {}
 /// The regions of a slow composite of `sprite` over `area`, inside `within`, the pixels of the
 /// surface it lands on.
 fn regionsOf(sprite: &LayerSprite, area: &Area, within: &Area, width: u32, height: u32) -> Regions {
-  let content = intersect(&spanning(area, &contentOf(sprite, area, width, height)), within)
+  let content = if sprite.transformed() {
+    contentOf(sprite, area, width, height)
+  } else {
+    intersect(area, within)
+  }
   let backdrop = if sprite.effects.backdropBlur > 0.0 {
-    intersect(&grown(area, blurReach(sprite.effects.backdropBlur), width, height), within)
+    grown(area, blurReach(sprite.effects.backdropBlur), within)
   } else {
     intersect(area, within)
   }
@@ -604,23 +667,65 @@ fn localTo(area: &Area, origin: &Area) -> Area {
 }
 
 /// The pixels of its texture a layer's content takes: where it lands, or for a transformed layer
-/// its untransformed `source`.
+/// the visible part of its untransformed `source` mapped back from `area`.
 fn contentOf(sprite: &LayerSprite, area: &Area, width: u32, height: u32) -> Area {
   if !sprite.transformed() {
     return area.*
   }
-  let x0 = f32.max(f32.floor(sprite.source.xMin), 0.0)
-  let y0 = f32.max(f32.floor(sprite.source.yMin), 0.0)
-  let x1 = f32.min(f32.ceil(sprite.source.xMax), u32.toF32(width))
-  let y1 = f32.min(f32.ceil(sprite.source.yMax), u32.toF32(height))
+  let mut loX = sprite.source.xMin
+  let mut loY = sprite.source.yMin
+  let mut hiX = sprite.source.xMax
+  let mut hiY = sprite.source.yMax
+  if let Option.Some { value: inv } = sprite.transform.inverse() {
+    let ax0 = i32.toF32(area.x) - 1.0
+    let ay0 = i32.toF32(area.y) - 1.0
+    let ax1 = i32.toF32(area.x) + u32.toF32(area.width) + 1.0
+    let ay1 = i32.toF32(area.y) + u32.toF32(area.height) + 1.0
+    let xs = [ax0, ax1, ax0, ax1]
+    let ys = [ay0, ay0, ay1, ay1]
+    let mut bx0: f32 = 1.0e30
+    let mut by0: f32 = 1.0e30
+    let mut bx1: f32 = -1.0e30
+    let mut by1: f32 = -1.0e30
+    let mut finite = true
+    let mut i: usize = 0
+    while i < 4 && finite {
+      let h = inv.transformHomogeneous(Point2<f32> { x: xs[i], y: ys[i] })
+      if !(h.z > 0.000001) {
+        finite = false
+      } else {
+        let px = h.x / h.z
+        let py = h.y / h.z
+        bx0 = f32.min(bx0, px)
+        by0 = f32.min(by0, py)
+        bx1 = f32.max(bx1, px)
+        by1 = f32.max(by1, py)
+      }
+      i = i + 1
+    }
+    if finite {
+      loX = f32.max(loX, bx0)
+      loY = f32.max(loY, by0)
+      hiX = f32.min(hiX, bx1)
+      hiY = f32.min(hiY, by1)
+    }
+  }
+  let x0 = f32.floor(loX)
+  let y0 = f32.floor(loY)
+  let x1 = f32.ceil(hiX)
+  let y1 = f32.ceil(hiY)
   if !(x0 < x1 && y0 < y1) {
     return Area { x: 0, y: 0, width: 0, height: 0 }
   }
+  let limitW = larger(width, MAX_LAYER_TEXTURE)
+  let limitH = larger(height, MAX_LAYER_TEXTURE)
+  let spanW = f32.min(x1 - x0, u32.toF32(limitW))
+  let spanH = f32.min(y1 - y0, u32.toF32(limitH))
   return Area {
-    x: f32.toU32(x0),
-    y: f32.toU32(y0),
-    width: f32.toU32(x1 - x0),
-    height: f32.toU32(y1 - y0),
+    x: f32.toI32(x0),
+    y: f32.toI32(y0),
+    width: smaller(f32.toU32(spanW), limitW),
+    height: smaller(f32.toU32(spanH), limitH),
   }
 }
 
@@ -1874,8 +1979,10 @@ impl UiRenderer {
       } else {
         self.pageBounds.get(page)
       }
-      let needWidth = if full { width } else { smaller(roundUp(larger(bounds.width, 1)), width) }
-      let needHeight = if full { height } else { smaller(roundUp(larger(bounds.height, 1)), height) }
+      let limitW = larger(width, MAX_LAYER_TEXTURE)
+      let limitH = larger(height, MAX_LAYER_TEXTURE)
+      let needWidth = if full { width } else { smaller(roundUp(larger(bounds.width, 1)), limitW) }
+      let needHeight = if full { height } else { smaller(roundUp(larger(bounds.height, 1)), limitH) }
       run needs.append(Area { x: bounds.x, y: bounds.y, width: needWidth, height: needHeight })
       run self.pageTextures.append(NO_PAGE)
       page = page + 1
@@ -1938,10 +2045,22 @@ impl UiRenderer {
     while page < count {
       let bounds = needs.get(page)
       let image = &self.pages.asSlice()[u32.toUsize(self.pageTextures.get(page))]
-      // The texture lies over the bounds and inside the target.
+      // The texture lies over the bounds, and inside the target when the bounds lie inside it.
+      let ax = if bounds.x >= 0 && i32.toI64(bounds.x) + u32.toI64(bounds.width) <= u32.toI64(width) && image.width <= width {
+        let maxX = u32.toI32(width - image.width)
+        if bounds.x < maxX { bounds.x } else { maxX }
+      } else {
+        bounds.x
+      }
+      let ay = if bounds.y >= 0 && i32.toI64(bounds.y) + u32.toI64(bounds.height) <= u32.toI64(height) && image.height <= height {
+        let maxY = u32.toI32(height - image.height)
+        if bounds.y < maxY { bounds.y } else { maxY }
+      } else {
+        bounds.y
+      }
       let area = Area {
-        x: smaller(bounds.x, width - image.width),
-        y: smaller(bounds.y, height - image.height),
+        x: ax,
+        y: ay,
         width: image.width,
         height: image.height,
       }
@@ -1971,8 +2090,8 @@ impl UiRenderer {
       r = r + 1
     }
     writeU32(&mut globals, 32, f32.toBits(1.0))
-    writeU32(&mut globals, 48, f32.toBits(u32.toF32(area.x)))
-    writeU32(&mut globals, 52, f32.toBits(u32.toF32(area.y)))
+    writeU32(&mut globals, 48, f32.toBits(i32.toF32(area.x)))
+    writeU32(&mut globals, 52, f32.toBits(i32.toF32(area.y)))
     return globals
   }
 
@@ -2009,7 +2128,7 @@ impl UiRenderer {
     let mut i: usize = 0
     while i < sprites.length {
       let sprite = self.placed.layer(sprites[i], groups[i])
-      let area = intersect(&areaOf(&sprite, width, height), &within)
+      let area = areaIn(&sprite, &within)
       if area.width > 0 && self.inlineOf(sprite.layer) == 0 {
         let mut planned = false
         if plain(&sprite) {
@@ -2024,7 +2143,7 @@ impl UiRenderer {
             } else {
               rect
             }
-            let page = run self.pageFor(depth + 1, &claim)
+            let page = run self.pageFor(depth + 1, &claim, width, height)
             if page != NO_PAGE {
               let index = self.plans.length()
               let mask = scene.maskOf(sprite.layer)
@@ -2039,7 +2158,7 @@ impl UiRenderer {
               planned = true
               if mask != NO_MASK {
                 // The mask layer takes the same pixels of another page.
-                own.mask = run self.pageFor(depth + 1, &claim)
+                own.mask = run self.pageFor(depth + 1, &claim, width, height)
                 if own.mask == NO_PAGE {
                   drop self.plans.pop()
                   planned = false
@@ -2094,7 +2213,7 @@ impl UiRenderer {
 
   /// A page of nesting `depth` where nothing touches `claim`, a new one when there is none, or
   /// [`NO_PAGE`] when the frame has its [`MAX_PAGES`].
-  effect fn pageFor(self: &mut Self, depth: u32, claim: &Area) -> u32
+  effect fn pageFor(self: &mut Self, depth: u32, claim: &Area, width: u32, height: u32) -> u32
     ! OutOfMemoryError
     ? &mut Allocator {
     let plans = self.plans.asSlice()
@@ -2109,6 +2228,8 @@ impl UiRenderer {
     // Of the pages it may share, the one whose bounds it grows least; a page of its own when that
     // would leave more of the page empty than the layer fills, since a page's texture spans its
     // bounds.
+    let limitW = larger(width, MAX_LAYER_TEXTURE)
+    let limitH = larger(height, MAX_LAYER_TEXTURE)
     let depths = self.pageDepths.asSlice()
     let mut best = NO_PAGE
     let mut bestWaste: u64 = 0
@@ -2116,12 +2237,15 @@ impl UiRenderer {
     while page < depths.length {
       if depths[page] == depth && taken & u32.shiftLeft(1, usize.toU32(page)) == 0 {
         let bounds = self.pageBounds.get(page)
-        let grown = sizeOf(&spanning(&bounds, claim))
-        let used = sizeOf(&bounds) + sizeOf(claim)
-        let waste = if grown > used { grown - used } else { 0 }
-        if best == NO_PAGE || waste < bestWaste {
-          best = usize.toU32(page)
-          bestWaste = waste
+        let merged = spanning(&bounds, claim)
+        if merged.width <= limitW && merged.height <= limitH {
+          let grown = sizeOf(&merged)
+          let used = sizeOf(&bounds) + sizeOf(claim)
+          let waste = if grown > used { grown - used } else { 0 }
+          if best == NO_PAGE || waste < bestWaste {
+            best = usize.toU32(page)
+            bestWaste = waste
+          }
         }
       }
       page = page + 1
@@ -2295,7 +2419,7 @@ impl UiRenderer {
             let mut i = u32.toUsize(batch.start)
             while i < u32.toUsize(batch.end) {
               let sprite = self.placed.layer(sprites[i], groups[i])
-              let area = intersect(&areaOf(&sprite, width, height), &rect)
+              let area = areaIn(&sprite, &rect)
               let plan = self.assigned.get(u32.toUsize(sprite.layer))
               if area.width > 0 && self.inlineOf(sprite.layer) != 0 {
                 // Its primitives are drawn here, through its transform, like the parent's own.
@@ -2401,15 +2525,15 @@ impl UiRenderer {
     if plan.mask != NO_PAGE {
       writeU32(&mut header, 116, 1)
       let maskArea = self.pageAreas.get(u32.toUsize(plan.mask))
-      writeU32(&mut header, 40, maskArea.x)
-      writeU32(&mut header, 44, maskArea.y)
+      writeI32(&mut header, 40, maskArea.x)
+      writeI32(&mut header, 44, maskArea.y)
     }
     let output = self.originOf(surface)
     let contentArea = self.pageAreas.get(u32.toUsize(plan.page))
-    writeU32(&mut header, 176, output.x)
-    writeU32(&mut header, 180, output.y)
-    writeU32(&mut header, 184, contentArea.x)
-    writeU32(&mut header, 188, contentArea.y)
+    writeI32(&mut header, 176, output.x)
+    writeI32(&mut header, 180, output.y)
+    writeI32(&mut header, 184, contentArea.x)
+    writeI32(&mut header, 188, contentArea.y)
     let params = &self.params.asSlice()[slot]
     queue.writeBuffer(params, 0, &header)
     let pipeline = match surface {
@@ -2473,6 +2597,9 @@ impl UiRenderer {
     let poolWidth = self.layers.asSlice()[0].width
     let poolHeight = self.layers.asSlice()[0].height
     regions.backdrop = fitted(regions.backdrop, poolWidth, poolHeight)
+    if regions.content.width == 0 || regions.content.height == 0 {
+      return
+    }
     let transparent = clearOf(Rgba<f32>.new(0.0, 0.0, 0.0, 0.0))
     run self.isolated(
       device,
@@ -2512,8 +2639,8 @@ impl UiRenderer {
     let from = localTo(&regions.backdrop, &within)
     if from.width > 0 {
       let mut origin = Origin3D.default()
-      origin.setX(from.x)
-      origin.setY(from.y)
+      origin.setX(i32.toU32(from.x))
+      origin.setY(i32.toU32(from.y))
       match reads {
         Option.Some { value } => {
           // Straight from the target, into a copy of its own format.
@@ -2652,7 +2779,7 @@ impl UiRenderer {
         let mut i = u32.toUsize(batch.start)
         while i < u32.toUsize(batch.end) {
           let sprite = self.placed.layer(sprites[i], groups[i])
-          let area = intersect(&areaOf(&sprite, width, height), &region)
+          let area = areaIn(&sprite, &region)
           if area.width > 0 && self.inlineOf(sprite.layer) != 0 {
             run self.drawInline(
               device,
@@ -2730,8 +2857,14 @@ impl UiRenderer {
     let effects = sprite.effects
     let scratch = self.layers.length() - 3
     // The content textures lie over `regions.content`, the backdrop's over `regions.backdrop`.
-    let local = localTo(&areaOf(&sprite, self.layerWidth, self.layerHeight), &regions.content)
-    let region = Region.make(local.x, local.y, local.x + local.width, local.y + local.height)
+    let local = if sprite.transformed() {
+      Area { x: 0, y: 0, width: regions.content.width, height: regions.content.height }
+    } else {
+      localTo(&areaIn(&sprite, &regions.content), &regions.content)
+    }
+    let lx = i32.toU32(local.x)
+    let ly = i32.toU32(local.y)
+    let region = Region.make(lx, ly, lx + local.width, ly + local.height)
     let images = self.layers.asSlice()
     let filter = &mut self.filters.asMutSlice()[0]
     let pyramid = &mut self.pyramid
@@ -2744,8 +2877,8 @@ impl UiRenderer {
         &mut encoder,
         pipeline,
         &images[source],
-        local.x,
-        local.y,
+        lx,
+        ly,
         local.width,
         local.height,
         effects.blur,
@@ -2758,8 +2891,8 @@ impl UiRenderer {
         pipeline,
         &images[scratch],
         blurred,
-        local.x,
-        local.y,
+        lx,
+        ly,
         local.width,
         local.height,
       )
@@ -2820,8 +2953,8 @@ impl UiRenderer {
               &mut encoder,
               pipeline,
               &images[content],
-              local.x,
-              local.y,
+              lx,
+              ly,
               local.width,
               local.height,
               effects.shadow.sigma,
@@ -2834,8 +2967,8 @@ impl UiRenderer {
               pipeline,
               &images[a],
               blurred,
-              local.x,
-              local.y,
+              lx,
+              ly,
               local.width,
               local.height,
             )
@@ -2980,12 +3113,12 @@ impl UiRenderer {
       k = k + 1
     }
     writeMapping(&mut header, &mapping)
-    writeU32(&mut header, 176, within.x)
-    writeU32(&mut header, 180, within.y)
-    writeU32(&mut header, 184, regions.content.x)
-    writeU32(&mut header, 188, regions.content.y)
-    writeU32(&mut header, 192, regions.backdrop.x)
-    writeU32(&mut header, 196, regions.backdrop.y)
+    writeI32(&mut header, 176, within.x)
+    writeI32(&mut header, 180, within.y)
+    writeI32(&mut header, 184, regions.content.x)
+    writeI32(&mut header, 188, regions.content.y)
+    writeI32(&mut header, 192, regions.backdrop.x)
+    writeI32(&mut header, 196, regions.backdrop.y)
     let list = self.layers.asSlice()
     let copied = if onTarget { &self.under.asSlice()[0].view } else { &list[0].view }
     let filtered = match backdrop {
@@ -3020,7 +3153,7 @@ impl UiRenderer {
     pass.setPipeline(pipeline)
     pass.setBindGroup(0, &group, &[])
     let local = localTo(&area, &within)
-    pass.setScissorRect(local.x, local.y, local.width, local.height)
+    pass.setScissorRect(i32.toU32(local.x), i32.toU32(local.y), local.width, local.height)
     pass.draw(3, 1, 0, 0)
     pass.end()
   }

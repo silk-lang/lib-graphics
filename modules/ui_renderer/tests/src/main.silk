@@ -37,10 +37,13 @@ import vector.geometry_error { GeometryError }
 import gpu_scene.renderer { extent }
 import ui_fixtures.cases { COUNT, Fixture, Tolerance, fixture }
 import ui_fixtures.fixtures { WIDTH, HEIGHT, rect, window }
-import ui_scene.primitives { SurfaceSprite }
+import silk.color.rgba { Rgba }
+import silk.geometry.matrix { Matrix3 }
+import silk.geometry.rect { Rect }
+import ui_scene.primitives { Background, ContentMask, Isolation, Quad, SurfaceSprite }
 import ui_scene.radii { Radii }
 import ui_scene.scene { Scene }
-import ui_scene.scroll { ScrollPosition }
+import ui_scene.scroll { ScrollAxis, ScrollLink, ScrollPosition }
 import atlas.atlas { Atlas, AtlasOptions }
 
 effect fn renderTarget(device: &Device, format: u32) -> Texture
@@ -485,6 +488,94 @@ effect fn checkRescroll(device: &Device, queue: &Queue, renderer: &mut UiRendere
   return ok
 }
 
+/// Transformed layers whose untransformed `source` sits far below the viewport or at negative
+/// coordinates (e.g. a scrolled page or a map world at `left: -850px`), including a nested
+/// transformed layer inside one, still composite cleanly when mapped onto the target; and a
+/// rotated layer clipped by a vertical mask clips vertically rather than diagonally in source space.
+effect fn checkOffscreenTransformLayers(
+  device: &Device,
+  queue: &Queue,
+  renderer: &mut UiRenderer,
+) -> bool
+  ! GpuError | OutOfMemoryError
+  ? &mut Allocator {
+  let mut scene = Scene.make()
+  let red = Rgba<f32>.new(1.0, 0.0, 0.0, 1.0)
+  let blue = Rgba<f32>.new(0.0, 0.0, 1.0, 1.0)
+  let green = Rgba<f32>.new(0.0, 1.0, 0.0, 1.0)
+  let full = ContentMask.new(Rect<f32>.new(-10000.0, -10000.0, 10000.0, 10000.0))
+
+  // Case 1: scrolled down by 2000px; outer scaled layer has negative x and y > 2000, with a nested
+  // transformed layer inside it (so neither is inlined).
+  run scene.setScroll(ScrollPosition { node: 42, x: 0.0, y: 2000.0, minX: 0.0, maxX: 0.0, minY: 0.0, maxY: 4000.0 })
+  drop run scene.pushScrollGroup(
+    ScrollLink { node: 42, x: ScrollAxis.content(), y: ScrollAxis.content() },
+    Rect<f32>.new(0.0, 0.0, u32.toF32(WIDTH), u32.toF32(HEIGHT)),
+    Rect<f32>.new(0.0, 0.0, u32.toF32(WIDTH), u32.toF32(HEIGHT)),
+  )
+  // Maps (-300, 2000) -> (20, 2020) at 0.5x scale (and scroll -2000 puts it at (20, 20)..(120, 120)).
+  let outerMatrix = Matrix3<f32>.new([0.5, 0.0, 0.0, 0.0, 0.5, 0.0, 170.0, 1020.0, 1.0])
+  drop run scene.pushTransformLayer(
+    Rect<f32>.new(-300.0, 2000.0, -100.0, 2200.0),
+    ContentMask.new(Rect<f32>.new(0.0, 2000.0, 240.0, 2180.0)),
+    Isolation { opacity: 1.0, blend: 0 },
+    outerMatrix,
+  )
+  drop run scene.quad(Quad.fill(Rect<f32>.new(-300.0, 2000.0, -100.0, 2200.0), full, Background.solid(red)))
+  // Nested scaled layer inside the outer transformed layer at (-240, 2060)..(-160, 2140).
+  let innerMatrix = Matrix3<f32>.new([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
+  drop run scene.pushTransformLayer(
+    Rect<f32>.new(-240.0, 2060.0, -160.0, 2140.0),
+    full,
+    Isolation { opacity: 1.0, blend: 0 },
+    Matrix3<f32>.new([0.5, 0.0, 0.0, 0.0, 0.5, 0.0, -100.0, 1050.0, 1.0]),
+  )
+  drop run scene.quad(Quad.fill(Rect<f32>.new(-240.0, 2060.0, -160.0, 2140.0), full, Background.solid(blue)))
+  drop innerMatrix
+  run scene.popLayer()
+  run scene.popLayer()
+  run scene.popScrollGroup()
+
+  // Case 2: non-inlined rotated layer (2 quads with opacity 0.9) shifted left past a vertical clip
+  // at x = 160; the clip must stay vertical at x = 160 from top to bottom.
+  let cosA: f32 = 0.9848077
+  let sinA: f32 = -0.1736482
+  let rot = Matrix3<f32>.new([cosA, sinA, 0.0, -sinA, cosA, 0.0, 150.0, 100.0, 1.0])
+  drop run scene.pushTransformLayer(
+    Rect<f32>.new(-40.0, -40.0, 60.0, 40.0),
+    ContentMask.new(Rect<f32>.new(160.0, 20.0, 230.0, 160.0)),
+    Isolation { opacity: 0.9, blend: 0 },
+    rot,
+  )
+  drop run scene.quad(Quad.fill(Rect<f32>.new(-40.0, -40.0, 60.0, 40.0), full, Background.solid(green)))
+  drop run scene.quad(Quad.fill(Rect<f32>.new(-30.0, -30.0, 50.0, 30.0), full, Background.solid(green)))
+  run scene.popLayer()
+  run scene.finish()
+
+  let atlas = Atlas.make(AtlasOptions.default())
+  let mut textures = GpuAtlas.make()
+  run textures.sync(device, &atlas)
+  let target = run renderTarget(device, flags.WGPUTextureFormat_RGBA8Unorm)
+  let view = run target.createView(&TextureViewDescriptor.default())
+  run renderer.draw(device, queue, &scene, &textures, &view, WIDTH, HEIGHT, color.transparent())
+  run device.checkErrors()
+  let drawn = run readBack(device, queue, &target, false)
+  let picture = drawn.asSlice()
+  let mut ok = true
+  // Outer red quad lands at (20..120, 20..120): check top-left red and nested blue center.
+  ok = near(pixelAt(picture, 30, 30), 255, 0, 0, 255) && ok
+  // Inner quad (-240..-160, 2060..2140) -> inner transform (-220..-180, 2080..2120) -> outer -> (60..80, 60..80).
+  ok = near(pixelAt(picture, 70, 70), 0, 0, 255, 255) && ok
+  // Rotated green quad clipped vertically at x = 160: left of 160 is clear, right of 160 is green
+  // across both upper (y=80) and lower (y=115) rows.
+  ok = near(pixelAt(picture, 156, 80), 0, 0, 0, 0) && ok
+  ok = near(pixelAt(picture, 156, 115), 0, 0, 0, 0) && ok
+  ok = near(pixelAt(picture, 165, 80), 0, 230, 0, 230) && ok
+  ok = near(pixelAt(picture, 165, 115), 0, 230, 0, 230) && ok
+  StderrWriter.print("offscreen transform layers: {}\n", &.(if ok { "ok" } else { "FAIL" }))
+  return ok
+}
+
 effect fn program() -> i32
   ! GpuError | OutOfMemoryError | GeometryError | AtlasError
   ? &mut Allocator {
@@ -546,6 +637,7 @@ effect fn program() -> i32
   // The scrolled scene (glyphs, layers, an image and paths in a scroll group), scrolled by the
   // compositor.
   ok = (run checkRescroll(&device, &queue, &mut rgba, 7)) && ok
+  ok = (run checkOffscreenTransformLayers(&device, &queue, &mut rgba)) && ok
   ok = (run checkSurfaces(&device, &queue, &mut rgba, false)) && ok
   ok = (run checkSurfaces(&device, &queue, &mut bgra, true)) && ok
 
