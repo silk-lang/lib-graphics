@@ -40,6 +40,7 @@ import silk.num.f32
 import silk.num.i32
 import silk.num.u32
 import silk.num.usize
+import silk.trace { Trace as Prof }
 import vector.strips { Fill, Strip }
 import effects { LayerEffects }
 import bounds_tree { BoundsTree }
@@ -1564,11 +1565,14 @@ impl Scene {
   pub effect fn replay(self: &mut Self, previous: &Scene, start: usize, end: usize) -> ()
     ! OutOfMemoryError
     ? &mut Allocator {
+    let _span = Prof.span("ui_scene.replay")
     let last = if end < previous.operations.length() {
       end
     } else {
       previous.operations.length()
     }
+    let ops = if last > start { last - start } else { 0 }
+    Prof.set("ops", &ops)
     let mut i = start
     while i < last {
       let op = previous.operations.get(i)
@@ -1757,6 +1761,7 @@ impl Scene {
   pub effect fn finish(self: &mut Self) -> ()
     ! OutOfMemoryError
     ? &mut Allocator {
+    let _span = Prof.span("ui_scene.finish")
     run self.ensureRoot()
     while self.stack.length() != 0 {
       if self.context().opensGroup {
@@ -1765,6 +1770,7 @@ impl Scene {
         drop self.stack.pop()
       }
     }
+    Prof.set("layers", &self.layersUsed)
     let data = self.layerData.asMutSlice()
     let mut i: usize = 0
     while i < u32.toUsize(self.layersUsed) {

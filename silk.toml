@@ -24,4 +24,4 @@ members = [
   "modules/vector/bench",
   "modules/vector/filter-bench"
 ]
-silk-version = "0.1.0-dev.90+43166993a300"
+silk-version = "0.1.0-dev.100+8f42b4e7342a"

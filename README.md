@@ -33,12 +33,12 @@ packages from `nonstd` will fail, even when their version strings match.
 
 ## Toolchain and builds
 
-Use Silk **0.1.0-dev.90+43166993a300**, LLVM **22** including `clang` and `wasm-ld`,
+Use Silk **0.1.0-dev.100+8f42b4e7342a**, LLVM **22** including `clang` and `wasm-ld`,
 and Git. `SILK_CLANG` selects an absolute LLVM 22 clang. The standard library ships
 with the compiler. Bootstrap Silk with its official installer before running tasks:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.sh | SILK_RELEASE='v0.1.0-dev.90+43166993a300' sh
+curl -fsSL https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.sh | SILK_RELEASE='v0.1.0-dev.100+8f42b4e7342a' sh
 export PATH="$HOME/.silk/bin:$PATH"
 export SILK_CLANG=/absolute/path/to/llvm22/bin/clang
 silk task
@@ -74,7 +74,7 @@ shorter 300-second build/Callgrind and 120-second sample deadlines.
   and PowerShell. Install Silk with the official installer:
 
   ```powershell
-  $env:SILK_RELEASE = 'v0.1.0-dev.90+43166993a300'
+  $env:SILK_RELEASE = 'v0.1.0-dev.100+8f42b4e7342a'
   irm https://raw.githubusercontent.com/silk-lang/silk/8214c402307b2eda053d71d353f8649f40c03074/install.ps1 | iex
   silk check --manifest-path modules/ui_renderer/browser/silk.toml --target wasm32-unknown-unknown
   silk task prepare-windows

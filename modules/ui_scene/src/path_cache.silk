@@ -25,6 +25,7 @@ import silk.num.u32
 import silk.num.u64
 import silk.num.u8
 import silk.num.usize
+import silk.trace { Trace as Prof }
 import vector.flatten { Line, TOLERANCE }
 import vector.flatten as flattening
 import vector.geometry { Affine }
@@ -196,6 +197,7 @@ impl PathCache {
   ) -> u32
     ! GeometryError | OutOfMemoryError
     ? &mut Allocator {
+    let _span = Prof.span("ui_scene.path.fill")
     return run self.draw(&mut scene, id, path, transform, rule, 0, paint, mask)
   }
 
@@ -213,6 +215,7 @@ impl PathCache {
   ) -> u32
     ! GeometryError | OutOfMemoryError
     ? &mut Allocator {
+    let _span = Prof.span("ui_scene.path.stroke")
     let hash = strokeHash(style)
     if id != 0 {
       let key = self.keyFor(id, transform, NONZERO, hash)

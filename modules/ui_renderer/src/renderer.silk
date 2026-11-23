@@ -33,6 +33,7 @@ import silk.num.f32
 import silk.num.u32
 import silk.num.u8
 import silk.num.usize
+import silk.trace { Trace as Prof }
 import webgpu.resources as gpu
 import webgpu.resources {
   Texture,
@@ -1141,6 +1142,7 @@ impl UiRenderer {
   ) -> ()
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
+    let _span = Prof.span("ui_renderer.draw")
     let mut encoder = run gpu.createCommandEncoder(device, b"ui frame")
     run self.encode(device, queue, &mut encoder, scene, atlas, target, width, height, clear)
     let finished = run encoder.finish(b"ui frame")
@@ -1318,6 +1320,9 @@ impl UiRenderer {
   ) -> ()
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
+    let _span = Prof.span("ui_renderer.encode")
+    let layers = scene.layerCount()
+    Prof.set("layers", &layers)
     run self.encodeOnto(device, queue, &mut encoder, scene, atlas, target, Option<&'static Texture>.None, width, height, clear)
   }
 
@@ -1339,6 +1344,7 @@ impl UiRenderer {
   ) -> ()
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
+    let _span = Prof.span("ui_renderer.drawReadable")
     let mut encoder = run gpu.createCommandEncoder(device, b"ui frame")
     run self.encodeOnto(device, queue, &mut encoder, scene, atlas, target, Option.some(texture), width, height, clear)
     let finished = run encoder.finish(b"ui frame")
@@ -1461,10 +1467,12 @@ impl UiRenderer {
   ) -> ()
     ! GpuError | OutOfMemoryError
     ? &mut Allocator {
+    let _span = Prof.span("ui_renderer.upload")
     let reuse = self.reuse
     self.reuse = false
     // The scene and size of the last draw: its instances are on the GPU.
     let same = reuse && self.held && width == self.heldWidth && height == self.heldHeight
+    Prof.set("reused", &same)
     if same && sameScrolls(self.newer.asSlice(), self.heldScrolls.asSlice()) {
       return
     }
