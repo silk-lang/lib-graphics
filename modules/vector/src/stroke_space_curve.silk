@@ -487,8 +487,9 @@ impl StrokeCurve {
     if !(low > 0.0) {
       return m * dt * dt
     }
-    let variation = f64.min(2.0, 2.0 * m * dt / low)
-    return (speed + m * dt * 0.5) * dt * variation * variation * 0.5
+    let turn = m * dt / low
+    let factor = f64.min(2.0, turn * turn * (1.0 / 24.0) * 1.000000000001)
+    return (speed + m * dt * 0.5) * dt * factor
   }
 
   pub fn offsetMetric(self: &Self, a: f64, b: f64, half: f64) -> f64 {

@@ -241,9 +241,26 @@ impl Curve {
     return self.secondBoundValue
   }
 
+  // Certified upper bound on max_u |p1*cos(u) + p2*sin(u)| (the largest singular value of [p1, p2]).
+  fn arcAxisBound(self: &Self) -> f64 {
+    let s = f64.max(length(self.p1), length(self.p2))
+    if s == 0.0 {
+      return 0.0
+    }
+    let u1x = self.p1.x / s
+    let u1y = self.p1.y / s
+    let u2x = self.p2.x / s
+    let u2y = self.p2.y / s
+    let a = u1x * u1x + u1y * u1y
+    let b = u2x * u2x + u2y * u2y
+    let c = u1x * u2x + u1y * u2y
+    let maxSq = (a + b) * 0.5 + norm((a - b) * 0.5, c)
+    return s * f64.sqrt(maxSq) * 1.000000000001
+  }
+
   fn computeSecondBound(self: &Self) -> f64 {
     if self.kind == ARC {
-      return (length(self.p1) + length(self.p2)) * f64.abs(self.sweep) * f64.abs(self.sweep)
+      return self.arcAxisBound() * f64.abs(self.sweep) * f64.abs(self.sweep)
     }
     return f64.max(length(self.second(0.0)), length(self.second(1.0)))
   }
@@ -261,7 +278,7 @@ impl Curve {
 
   fn computeFirstBound(self: &Self) -> f64 {
     if self.kind == ARC {
-      return (length(self.p1) + length(self.p2)) * f64.abs(self.sweep)
+      return self.arcAxisBound() * f64.abs(self.sweep)
     }
     if self.kind == LINE {
       return length(sub(self.p1, self.p0))
@@ -371,8 +388,9 @@ impl Curve {
       * (self.secondBound() + half * (self.normalSecondBound() / v + 3.0 * ratio * ratio))
   }
 
-  /// Chord length underestimates arc length. Projecting the velocity onto the chord gives
-  /// an excess bounded by maxSpeed * (unit-tangent variation)^2 / 2 over the interval.
+  /// Chord length underestimates arc length. Projecting velocity onto the midpoint unit tangent
+  /// u = T((a+b)/2) gives L - |C| <= integral |P'(t)| * |T(t) - u|^2 / 2 dt. Since |T'(s)| <= m / low,
+  /// |T(t) - u| <= (m / low) * |t - mid|, whose squared integral over [a, b] is (m / low)^2 * dt^3 / 24.
   pub fn lengthError(self: &Self, a: f64, b: f64) -> f64 {
     if self.kind == LINE {
       return 0.0
@@ -384,8 +402,9 @@ impl Curve {
     if !(low > 0.0) {
       return m * dt * dt
     }
-    let variation = f64.min(2.0, 2.0 * m * dt / low)
-    return (speed + m * dt * 0.5) * dt * variation * variation * 0.5
+    let turn = m * dt / low
+    let factor = f64.min(2.0, turn * turn * (1.0 / 24.0) * 1.000000000001)
+    return (speed + m * dt * 0.5) * dt * factor
   }
 
   /// Upper bound on motion of either offset per unit source arclength. It controls accumulated
