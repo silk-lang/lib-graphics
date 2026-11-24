@@ -361,7 +361,11 @@ effect fn packShadow(bytes: &mut List<u8>, s: Shadow, transform: f32) -> ()
       0.0
     },
     transform,
-    0.0,
+    if s.cutout {
+      1.0
+    } else {
+      0.0
+    },
   )
   run pushRadii(&mut bytes, s.mask.radii)
 }

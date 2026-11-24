@@ -323,9 +323,11 @@ impl Quad {
 /// `bounds` and `cornerRadii` are the box casting the shadow. The shadow's shape is that box moved
 /// by `offset` and grown by `spread` on every side, its radii [`Radii.spread`] and fitted. It
 /// is blurred by a Gaussian with standard deviation `blurRadius / 2`, as CSS defines the blur
-/// radius. A drop shadow (`inset` false) draws the blurred shape and is not cut out under the box,
-/// as in GPUI: draw the box over it. An inset shadow draws inside the box only: the box minus the
-/// shape (shrunk by `spread` instead of grown), blurred.
+/// radius. A drop shadow (`inset` false) draws the blurred shape; when `cutout` is false it is
+/// not cut out under the box (as in GPUI, when an opaque box draws over it), and when `cutout` is
+/// true the box interior is cut out (as CSS `box-shadow` requires for transparent or translucent
+/// boxes). An inset shadow draws inside the box only: the box minus the shape (shrunk by `spread`
+/// instead of grown), blurred.
 pub struct Shadow {
   pub bounds: Rect<f32>,
   pub mask: ContentMask,
@@ -335,6 +337,7 @@ pub struct Shadow {
   pub offset: Vector2<f32>,
   pub spread: f32,
   pub inset: bool,
+  pub cutout: bool,
 }
 
 impl Copy for Shadow {}

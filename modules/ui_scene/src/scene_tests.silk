@@ -46,6 +46,7 @@ pub fn shadowUnder(bounds: Rect<f32>) -> Shadow {
     offset: Vector2<f32>.new(0.0, 2.0),
     spread: 0.0,
     inset: false,
+    cutout: false,
   }
 }
 

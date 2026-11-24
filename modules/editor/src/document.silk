@@ -778,6 +778,7 @@ impl Document {
               offset: Vector2<f32>.new(n.shadowX * s, n.shadowY * s),
               spread: 0.0,
               inset: false,
+              cutout: false,
             },
           )
         }
@@ -806,6 +807,7 @@ impl Document {
               offset: Vector2<f32>.new(n.innerX * s, n.innerY * s),
               spread: 0.0,
               inset: true,
+              cutout: false,
             },
           )
         }

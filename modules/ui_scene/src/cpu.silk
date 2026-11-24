@@ -1331,8 +1331,8 @@ impl CpuRenderer {
       }
       y = y + 1
     }
-    if shadow.inset {
-      // Only inside the box.
+    if shadow.inset || shadow.cutout {
+      // Inset shadows stay inside the box; cutout drop shadows leave the box interior clear.
       self.path.clear()
       run roundedRect(
         &mut self.path,
@@ -1342,6 +1342,9 @@ impl CpuRenderer {
       )
       let mut box = List<u8>.make()
       run self.rasterize(visible, NONZERO, &mut box)
+      if !shadow.inset {
+        invert(box.asMutSlice())
+      }
       multiply(mask.asMutSlice(), box.asSlice())
     }
     self.painter.setColor(shadow.color)

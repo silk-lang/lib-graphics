@@ -416,6 +416,7 @@ effect fn shadows() -> ()
       offset: Vector2<f32>.new(0.0, 0.0),
       spread: 0.0,
       inset: false,
+      cutout: false,
     },
   )
   drop run scene.shadow(
@@ -428,6 +429,7 @@ effect fn shadows() -> ()
       offset: Vector2<f32>.new(0.0, 0.0),
       spread: 4.0,
       inset: true,
+      cutout: false,
     },
   )
   let image = run render(&mut scene, &pixels)
@@ -445,6 +447,36 @@ test effect fn dropAndInsetShadows() -> ()
   ! AssertionError<'static> | GeometryError | OutOfMemoryError {
   let mut allocator = Allocator.systemAllocatorProvider()
   run shadows() |> Effect.provideMut<Allocator>(&mut allocator)
+}
+
+effect fn cutoutShadow() -> ()
+  ! AssertionError<'static> | GeometryError | OutOfMemoryError
+  ? &mut Allocator {
+  let pixels = AtlasPixels.make()
+  let mut scene = Scene.make()
+  drop run scene.shadow(
+    Shadow {
+      bounds: rect(30.0, 30.0, 40.0, 40.0),
+      mask: window(),
+      cornerRadii: Radii.uniform(20.0),
+      color: color.rgba(0x000000a0),
+      blurRadius: 0.0,
+      offset: Vector2<f32>.new(0.0, 0.0),
+      spread: 20.0,
+      inset: false,
+      cutout: true,
+    },
+  )
+  let image = run render(&mut scene, &pixels)
+  run Testing.expect(image.pixel(50, 50).a == 0, "cutout drop shadow leaves box center clear")
+  run Testing.expect(image.pixel(15, 50).a > 150, "cutout drop shadow paints spread outside box")
+  run Testing.expect(image.pixel(32, 32).a > 150, "cutout drop shadow fills outside rounded corner")
+}
+
+test effect fn cutoutDropShadowLeavesInteriorClear() -> ()
+  ! AssertionError<'static> | GeometryError | OutOfMemoryError {
+  let mut allocator = Allocator.systemAllocatorProvider()
+  run cutoutShadow() |> Effect.provideMut<Allocator>(&mut allocator)
 }
 
 effect fn sprites() -> ()

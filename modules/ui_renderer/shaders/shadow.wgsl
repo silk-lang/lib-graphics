@@ -100,6 +100,8 @@ fn inverseOf(e: vec2f) -> f32 {
   }
   if s.params.y != 0.0 {
     alpha = (1.0 - alpha) * roundedCoverage(p, s.box, s.boxRadii, at.scale);
+  } else if s.params.w != 0.0 {
+    alpha = alpha * (1.0 - roundedCoverage(p, s.box, s.boxRadii, at.scale));
   }
   return premultiply(s.color) * (clamp(alpha, 0.0, 1.0) * clip);
 }

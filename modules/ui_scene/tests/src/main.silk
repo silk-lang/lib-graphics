@@ -100,6 +100,7 @@ fn shadow(
     offset: Vector2<f32>.new(0.0, dy),
     spread: spread,
     inset: inset,
+    cutout: false,
   }
 }
 
